@@ -74,18 +74,11 @@ func main() {
 	if version == "" {
 		version = "v1"
 	}
-	adminKeyID := os.Getenv("ADMIN_TRANSPORT_KEY_ID")
-	if adminKeyID == "" {
-		adminKeyID = "admin-v1"
-	}
-	if _, ok := keys[adminKeyID]; !ok {
-		log.Fatalf("transport key %q is not configured", adminKeyID)
-	}
 	if os.Getenv("AGENT_TRANSPORT_KEY_ID") == "" || keys[os.Getenv("AGENT_TRANSPORT_KEY_ID")] == nil {
 		log.Fatal("AGENT_TRANSPORT_KEY_ID must identify a configured transport key for agent login")
 	}
 
-	s := &Server{db: db, keys: keys, credentialKey: credentialKey, credentialKeyVersion: version, adminKeyID: adminKeyID}
+	s := &Server{db: db, keys: keys, credentialKey: credentialKey, credentialKeyVersion: version, adminKeyID: "admin-v1"}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("POST /api/admin/v1/auth/login", s.adminLogin)
@@ -185,7 +178,8 @@ func tokenFromRandom(dst []byte) (string, []byte, error) {
 	if _, err := randRead(dst); err != nil {
 		return "", nil, err
 	}
-	return base64.RawURLEncoding.EncodeToString(dst), sha256Bytes(dst), nil
+	token := base64.RawURLEncoding.EncodeToString(dst)
+	return token, sha256Bytes([]byte(token)), nil
 }
 
 func randRead(dst []byte) (int, error) { return cryptographicRead(dst) }

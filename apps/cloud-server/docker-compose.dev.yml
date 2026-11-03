@@ -1,0 +1,46 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: robot-mysql-dev
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-robot}
+      MYSQL_USER: ${MYSQL_APP_USER:-robot_app}
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - robot-mysql-data:/var/lib/mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  cloud-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: robot-cloud-server-dev
+    restart: unless-stopped
+    environment:
+      MYSQL_DSN: ${MYSQL_APP_USER:-robot_app}:${MYSQL_APP_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE:-robot}?parseTime=true&charset=utf8mb4
+      ADMIN_BOOTSTRAP_USERNAME: ${ADMIN_BOOTSTRAP_USERNAME:-admin}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD}
+      TRANSPORT_KEYS_JSON: ${TRANSPORT_KEYS_JSON}
+      AGENT_TRANSPORT_KEY_ID: ${AGENT_TRANSPORT_KEY_ID:-client-v1}
+      AGENT_CREDENTIAL_ENCRYPTION_KEY: ${AGENT_CREDENTIAL_ENCRYPTION_KEY}
+      AGENT_CREDENTIAL_KEY_VERSION: ${AGENT_CREDENTIAL_KEY_VERSION:-v1}
+      LISTEN_ADDR: :8080
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  robot-mysql-data:

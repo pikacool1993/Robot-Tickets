@@ -32,33 +32,53 @@ func (s *Server) request(w http.ResponseWriter, r *http.Request, keyID string, o
 	}
 	return true
 }
+func (s *Server) adminRequest(w http.ResponseWriter, r *http.Request, _ string, out any) bool {
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(out); err != nil {
+		s.adminFailure(w, http.StatusBadRequest, "", "invalid_json", "Invalid JSON request")
+		return false
+	}
+	return true
+}
+
+func (s *Server) adminRespond(w http.ResponseWriter, status int, _ string, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func (s *Server) adminFailure(w http.ResponseWriter, status int, _ string, code, message string) {
+	s.adminRespond(w, status, "", payload{Code: code, Message: message})
+}
+
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if !s.request(w, r, s.adminKeyID, &in) {
+	if !s.adminRequest(w, r, s.adminKeyID, &in) {
 		return
 	}
 	var id, hash, status string
 	err := s.db.QueryRowContext(r.Context(), "SELECT id,password_hash,status FROM admin_users WHERE username=?", strings.ToLower(strings.TrimSpace(in.Username))).Scan(&id, &hash, &status)
 	if err != nil || status != "enabled" || bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil {
 		s.audit(r.Context(), "admin", nil, "admin_login_failed", clientIP(r), "failure", nil)
-		s.failure(w, 401, s.adminKeyID, "invalid_credentials", "Invalid credentials")
+		s.adminFailure(w, 401, s.adminKeyID, "invalid_credentials", "Invalid credentials")
 		return
 	}
 	token, tokenHash, err := randomToken()
 	if err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	expires, err := writeSession(r.Context(), s.db, "admin_sessions", "admin_user_id", id, token, tokenHash, clientIP(r))
 	if err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	s.audit(r.Context(), "admin", nil, "admin_login_succeeded", clientIP(r), "success", map[string]any{"admin_id": id})
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", map[string]any{"access_token": token, "token_type": "Bearer", "expires_at": expires, "admin": map[string]string{"id": id, "username": strings.ToLower(in.Username)}}})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", map[string]any{"access_token": token, "token_type": "Bearer", "expires_at": expires, "admin": map[string]string{"id": id, "username": strings.ToLower(in.Username)}}})
 }
 func bearer(r *http.Request) string {
 	a := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
@@ -80,7 +100,7 @@ func (s *Server) agentID(r *http.Request) (string, bool) {
 func (s *Server) adminKey(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id, ok := s.adminID(r)
 	if !ok {
-		s.failure(w, 401, s.adminKeyID, "unauthorized", "Authentication required")
+		s.adminFailure(w, 401, s.adminKeyID, "unauthorized", "Authentication required")
 	}
 	return id, ok
 }
@@ -97,7 +117,7 @@ func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = s.db.ExecContext(r.Context(), "UPDATE admin_sessions SET revoked_at=now() WHERE token_hash=?", hashToken(bearer(r)))
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", nil})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", nil})
 }
 func (s *Server) adminMe(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.adminKey(w, r)
@@ -106,7 +126,7 @@ func (s *Server) adminMe(w http.ResponseWriter, r *http.Request) {
 	}
 	var username string
 	_ = s.db.QueryRowContext(r.Context(), "SELECT username FROM admin_users WHERE id=?", id).Scan(&username)
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", map[string]string{"id": id, "username": username}})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", map[string]string{"id": id, "username": username}})
 }
 func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	admin, ok := s.adminKey(w, r)
@@ -118,34 +138,34 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		Username   string `json:"username"`
 		MaxDevices int    `json:"max_devices"`
 	}
-	if !s.request(w, r, s.adminKeyID, &in) {
+	if !s.adminRequest(w, r, s.adminKeyID, &in) {
 		return
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	in.Username = strings.ToLower(strings.TrimSpace(in.Username))
 	if in.Name == "" || len(in.Name) > 200 || !validUsername(in.Username) || in.MaxDevices < 1 || in.MaxDevices > 10000 {
-		s.failure(w, 400, s.adminKeyID, "invalid_input", "Invalid agent fields")
+		s.adminFailure(w, 400, s.adminKeyID, "invalid_input", "Invalid agent fields")
 		return
 	}
 	secret, err := randomPassword()
 	if err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	ciphertext, nonce, err := auth.SealSecret(s.credentialKey, secret)
 	if err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	var id string
 	id = newID()
 	_, err = s.db.ExecContext(r.Context(), "INSERT INTO agents(id,name,username,password_ciphertext,password_nonce,password_key_version,max_devices,created_by) VALUES(?,?,?,?,?,?,?,?)", id, in.Name, in.Username, ciphertext, nonce, s.credentialKeyVersion, in.MaxDevices, admin)
 	if err != nil {
-		s.failure(w, 409, s.adminKeyID, "username_conflict", "Username already exists")
+		s.adminFailure(w, 409, s.adminKeyID, "username_conflict", "Username already exists")
 		return
 	}
 	s.audit(r.Context(), "admin", &id, "agent_created", clientIP(r), "success", map[string]any{"username": in.Username, "max_devices": in.MaxDevices})
-	s.respond(w, 201, s.adminKeyID, payload{"ok", "", map[string]any{"id": id, "name": in.Name, "username": in.Username, "max_devices": in.MaxDevices, "password": secret}})
+	s.adminRespond(w, 201, s.adminKeyID, payload{"ok", "", map[string]any{"id": id, "name": in.Name, "username": in.Username, "max_devices": in.MaxDevices, "password": secret}})
 }
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.adminKey(w, r); !ok {
@@ -153,7 +173,7 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.db.QueryContext(r.Context(), "SELECT id,name,username,status,max_devices,last_login_at,last_login_ip,created_at FROM agents ORDER BY created_at DESC LIMIT 200")
 	if err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	defer rows.Close()
@@ -168,7 +188,7 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"id": id, "name": name, "username": user, "status": status, "max_devices": max, "last_login_at": last, "last_login_ip": ip, "created_at": created})
 		}
 	}
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", items})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", items})
 }
 func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.adminKey(w, r); !ok {
@@ -181,11 +201,11 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 	var ip *string
 	err := s.db.QueryRowContext(r.Context(), "SELECT id,name,username,status,max_devices,last_login_at,last_login_ip FROM agents WHERE id=?", r.PathValue("id")).Scan(&id, &name, &user, &status, &max, &last, &ip)
 	if err != nil {
-		s.failure(w, 404, s.adminKeyID, "not_found", "Agent not found")
+		s.adminFailure(w, 404, s.adminKeyID, "not_found", "Agent not found")
 		return
 	}
 	out = map[string]any{"id": id, "name": name, "username": user, "status": status, "max_devices": max, "last_login_at": last, "last_login_ip": ip}
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", out})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", out})
 }
 func (s *Server) viewCredential(w http.ResponseWriter, r *http.Request) {
 	admin, ok := s.adminKey(w, r)
@@ -197,17 +217,17 @@ func (s *Server) viewCredential(w http.ResponseWriter, r *http.Request) {
 	var name, user string
 	err := s.db.QueryRowContext(r.Context(), "SELECT password_ciphertext,password_nonce,password_key_version,name,username FROM agents WHERE id=?", r.PathValue("id")).Scan(&ct, &nonce, &ver, &name, &user)
 	if err != nil {
-		s.failure(w, 404, s.adminKeyID, "not_found", "Agent not found")
+		s.adminFailure(w, 404, s.adminKeyID, "not_found", "Agent not found")
 		return
 	}
 	secret, err := auth.OpenSecret(s.credentialKey, ct, nonce)
 	if err != nil || ver != s.credentialKeyVersion {
-		s.failure(w, 500, s.adminKeyID, "credential_unavailable", "Credential unavailable")
+		s.adminFailure(w, 500, s.adminKeyID, "credential_unavailable", "Credential unavailable")
 		return
 	}
 	id := r.PathValue("id")
 	s.audit(r.Context(), "admin", &id, "credential_viewed", clientIP(r), "success", map[string]any{"admin_id": admin})
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", map[string]string{"name": name, "username": user, "password": secret}})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", map[string]string{"name": name, "username": user, "password": secret}})
 }
 func (s *Server) resetCredential(w http.ResponseWriter, r *http.Request) {
 	admin, ok := s.adminKey(w, r)
@@ -217,33 +237,33 @@ func (s *Server) resetCredential(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	secret, err := randomPassword()
 	if err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	ct, n, err := auth.SealSecret(s.credentialKey, secret)
 	if err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	defer tx.Rollback()
 	tag, err := tx.ExecContext(r.Context(), "UPDATE agents SET password_ciphertext=?,password_nonce=?,password_key_version=?,updated_at=now() WHERE id=?", ct, n, s.credentialKeyVersion, id)
 	rows, _ := tag.RowsAffected()
 	if err != nil || rows == 0 {
-		s.failure(w, 404, s.adminKeyID, "not_found", "Agent not found")
+		s.adminFailure(w, 404, s.adminKeyID, "not_found", "Agent not found")
 		return
 	}
 	_, _ = tx.ExecContext(r.Context(), "UPDATE agent_sessions SET revoked_at=now() WHERE agent_id=? AND revoked_at IS NULL", id)
 	_, _ = tx.ExecContext(r.Context(), "INSERT INTO audit_events(actor_type,actor_admin_id,agent_id,event_type,source_ip,result,details) VALUES('admin',?,?,'credential_reset',?,'success',?)", admin, id, clientIP(r), jsonBytes(map[string]any{}))
 	if err = tx.Commit(); err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", map[string]string{"password": secret}})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", map[string]string{"password": secret}})
 }
 func (s *Server) setAgentStatus(w http.ResponseWriter, r *http.Request) {
 	admin, ok := s.adminKey(w, r)
@@ -253,24 +273,24 @@ func (s *Server) setAgentStatus(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Status string `json:"status"`
 	}
-	if !s.request(w, r, s.adminKeyID, &in) {
+	if !s.adminRequest(w, r, s.adminKeyID, &in) {
 		return
 	}
 	if in.Status != "enabled" && in.Status != "disabled" && in.Status != "locked" && in.Status != "suspended" {
-		s.failure(w, 400, s.adminKeyID, "invalid_status", "Invalid status")
+		s.adminFailure(w, 400, s.adminKeyID, "invalid_status", "Invalid status")
 		return
 	}
 	id := r.PathValue("id")
 	tx, e := s.db.BeginTx(r.Context(), nil)
 	if e != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	defer tx.Rollback()
 	var old string
 	e = tx.QueryRowContext(r.Context(), "SELECT status FROM agents WHERE id=? FOR UPDATE", id).Scan(&old)
 	if e != nil {
-		s.failure(w, 404, s.adminKeyID, "not_found", "Agent not found")
+		s.adminFailure(w, 404, s.adminKeyID, "not_found", "Agent not found")
 		return
 	}
 	_, e = tx.ExecContext(r.Context(), "UPDATE agents SET status=?,updated_at=now() WHERE id=?", in.Status, id)
@@ -281,10 +301,10 @@ func (s *Server) setAgentStatus(w http.ResponseWriter, r *http.Request) {
 		_, e = tx.ExecContext(r.Context(), "INSERT INTO audit_events(actor_type,actor_admin_id,agent_id,event_type,source_ip,result,details) VALUES('admin',?,?,'agent_status_changed',?,'success',?)", admin, id, clientIP(r), jsonBytes(map[string]string{"old_status": old, "new_status": in.Status}))
 	}
 	if e != nil || tx.Commit() != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", map[string]string{"status": in.Status}})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", map[string]string{"status": in.Status}})
 }
 func (s *Server) setDeviceLimit(w http.ResponseWriter, r *http.Request) {
 	admin, ok := s.adminKey(w, r)
@@ -294,26 +314,26 @@ func (s *Server) setDeviceLimit(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		MaxDevices int `json:"max_devices"`
 	}
-	if !s.request(w, r, s.adminKeyID, &in) {
+	if !s.adminRequest(w, r, s.adminKeyID, &in) {
 		return
 	}
 	if in.MaxDevices < 1 || in.MaxDevices > 10000 {
-		s.failure(w, 400, s.adminKeyID, "invalid_input", "Invalid device limit")
+		s.adminFailure(w, 400, s.adminKeyID, "invalid_input", "Invalid device limit")
 		return
 	}
 	id := r.PathValue("id")
 	var old int
 	err := s.db.QueryRowContext(r.Context(), "SELECT max_devices FROM agents WHERE id=?", id).Scan(&old)
 	if err != nil {
-		s.failure(w, 404, s.adminKeyID, "not_found", "Agent not found")
+		s.adminFailure(w, 404, s.adminKeyID, "not_found", "Agent not found")
 		return
 	}
 	if _, err = s.db.ExecContext(r.Context(), "UPDATE agents SET max_devices=?,updated_at=NOW(6) WHERE id=?", in.MaxDevices, id); err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	s.audit(r.Context(), "admin", &id, "device_limit_changed", clientIP(r), "success", map[string]any{"max_devices": in.MaxDevices, "admin_id": admin})
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", map[string]int{"max_devices": in.MaxDevices}})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", map[string]int{"max_devices": in.MaxDevices}})
 }
 func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.adminKey(w, r); !ok {
@@ -322,10 +342,10 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	tag, err := s.db.ExecContext(r.Context(), "DELETE FROM agents WHERE id=?", r.PathValue("id"))
 	rowsAffected, _ := tag.RowsAffected()
 	if err != nil || rowsAffected == 0 {
-		s.failure(w, 404, s.adminKeyID, "not_found", "Agent not found")
+		s.adminFailure(w, 404, s.adminKeyID, "not_found", "Agent not found")
 		return
 	}
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", nil})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", nil})
 }
 func (s *Server) agentAudit(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.adminKey(w, r); !ok {
@@ -333,7 +353,7 @@ func (s *Server) agentAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.db.QueryContext(r.Context(), "SELECT event_type,occurred_at,source_ip,result,details FROM audit_events WHERE agent_id=? ORDER BY occurred_at DESC LIMIT 200", r.PathValue("id"))
 	if err != nil {
-		s.failure(w, 500, s.adminKeyID, "internal_error", "Internal error")
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
 	}
 	defer rows.Close()
@@ -349,7 +369,7 @@ func (s *Server) agentAudit(w http.ResponseWriter, r *http.Request) {
 			out = append(out, map[string]any{"event_type": ev, "occurred_at": at, "source_ip": ip, "result": res, "details": details})
 		}
 	}
-	s.respond(w, 200, s.adminKeyID, payload{"ok", "", out})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", out})
 }
 
 func (s *Server) agentLogin(w http.ResponseWriter, r *http.Request) {

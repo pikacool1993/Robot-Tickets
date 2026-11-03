@@ -2,6 +2,55 @@
 
 ## 本地运行（Windows / PowerShell）
 
+## 使用 Docker Compose 本地运行
+
+如果本机已安装 Docker Desktop，推荐使用 Compose 同时启动 MySQL 和 `cloud-server`。
+
+### 1. 创建环境文件
+
+在 `E:\Robot\apps\cloud-server` 目录执行：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+编辑 `.env`，至少修改 `MYSQL_ROOT_PASSWORD`、`MYSQL_APP_PASSWORD` 和 `ADMIN_BOOTSTRAP_PASSWORD`。AES 密钥可以用 PowerShell 生成：
+
+```powershell
+function New-AesKey { $buf = [byte[]]::new(32); [Security.Cryptography.RandomNumberGenerator]::Fill($buf); [Convert]::ToBase64String($buf) }
+$adminKey = New-AesKey
+$clientKey = New-AesKey
+$credentialKey = New-AesKey
+```
+
+把生成的两个值分别填入 `.env` 的 `TRANSPORT_KEYS_JSON`（仅 `client-v1`）以及 `AGENT_CREDENTIAL_ENCRYPTION_KEY`。管理员后台接口使用普通 JSON，不再需要管理员传输密钥。不要提交 `.env`。
+
+### 2. 启动
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml up --build
+```
+
+MySQL 会先自动创建数据库和业务账号；MySQL 健康检查通过后，`cloud-server` 自动执行表迁移并启动。另开窗口检查：
+
+```powershell
+Invoke-WebRequest http://localhost:8080/healthz -Method Get
+```
+
+### 3. 停止和清理
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml down
+```
+
+保留 MySQL 数据。如果需要清空本地数据库并重新初始化：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml down -v
+```
+
+Compose 初始化账号和数据库只在 MySQL 数据卷为空时执行。修改 `.env` 中的数据库密码后，如需让新密码生效，应先执行 `down -v` 再重新启动。
+
 ### 1. 创建 MySQL 数据库和账号
 
 先用有权限的 MySQL 管理账号执行一次（替换密码）：
@@ -19,7 +68,6 @@ FLUSH PRIVILEGES;
 
 ```powershell
 $newAesKey = { $buf = [byte[]]::new(32); [Security.Cryptography.RandomNumberGenerator]::Fill($buf); [Convert]::ToBase64String($buf) }
-$adminTransportKey = & $newAesKey
 $agentTransportKey = & $newAesKey
 $credentialEncryptionKey = & $newAesKey
 ```
@@ -34,8 +82,7 @@ $credentialEncryptionKey = & $newAesKey
 $env:MYSQL_DSN = 'robot_app:替换为强密码@tcp(127.0.0.1:3306)/robot?parseTime=true&charset=utf8mb4'
 $env:ADMIN_BOOTSTRAP_USERNAME = 'admin'
 $env:ADMIN_BOOTSTRAP_PASSWORD = '替换为强管理员密码'
-$env:TRANSPORT_KEYS_JSON = "{`"admin-v1`":`"$adminTransportKey`",`"client-v1`":`"$agentTransportKey`"}"
-$env:ADMIN_TRANSPORT_KEY_ID = 'admin-v1'
+$env:TRANSPORT_KEYS_JSON = "{`"client-v1`":`"$agentTransportKey`"}"
 $env:AGENT_TRANSPORT_KEY_ID = 'client-v1'
 $env:AGENT_CREDENTIAL_ENCRYPTION_KEY = $credentialEncryptionKey
 $env:AGENT_CREDENTIAL_KEY_VERSION = 'v1'
@@ -54,7 +101,7 @@ go run ./cmd/server
 Invoke-WebRequest http://localhost:8080/healthz -Method Get
 ```
 
-成功时返回 HTTP `204 No Content`。`/healthz` 是不含业务数据的明文基础设施端点；业务 API 按项目协议使用 AES-GCM JSON 信封。客户端登录使用 `client-v1`；管理员 API 使用 `admin-v1`。
+成功时返回 HTTP `204 No Content`。`/healthz` 是不含业务数据的明文基础设施端点；代理商 API 使用 `client-v1` 的 AES-GCM JSON 信封，管理员 API 使用普通 JSON。
 
 ### 5. 测试与构建
 
