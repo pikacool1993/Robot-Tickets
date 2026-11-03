@@ -1,5 +1,5 @@
 {
-  "name": "cloud-admin-web",
+  "name": "admin-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",

@@ -4,7 +4,7 @@
 
 ## 使用 Docker Compose 本地运行
 
-如果本机已安装 Docker Desktop，推荐使用 Compose 同时启动 MySQL 和 `cloud-server`。
+如果本机已安装 Docker Desktop，推荐使用 Compose 同时启动 MySQL 和 `cloud-server`。`cloud-server` 镜像会在一次构建中编译 `admin-web` 前端和 Go 服务端，由同一个容器提供管理页面与 API。
 
 ### 1. 创建环境文件
 
@@ -28,10 +28,10 @@ $credentialKey = New-AesKey
 ### 2. 启动
 
 ```powershell
-docker compose --env-file .env -f docker-compose.dev.yml up --build
+docker compose --env-file .env -f docker-compose.dev.yml up --build -d
 ```
 
-MySQL 会先自动创建数据库和业务账号；MySQL 健康检查通过后，`cloud-server` 自动执行表迁移并启动。另开窗口检查：
+MySQL 会先自动创建数据库和业务账号；MySQL 健康检查通过后，`cloud-server` 自动执行表迁移并启动。浏览器访问 `http://localhost:8080` 使用管理后台，API 位于同一源的 `/api/` 下。另开窗口检查：
 
 ```powershell
 Invoke-WebRequest http://localhost:8080/healthz -Method Get
@@ -101,7 +101,7 @@ go run ./cmd/server
 Invoke-WebRequest http://localhost:8080/healthz -Method Get
 ```
 
-成功时返回 HTTP `204 No Content`。`/healthz` 是不含业务数据的明文基础设施端点；代理商 API 使用 `client-v1` 的 AES-GCM JSON 信封，管理员 API 使用普通 JSON。
+成功时返回 HTTP `204 No Content`。`/healthz` 是不含业务数据的明文基础设施端点；代理商 API 使用 `client-v1` 的 AES-GCM JSON 信封，管理员 API 使用普通 JSON。管理页面由 Go 服务端托管，不需要额外的 Web 容器或 Nginx。
 
 ### 5. 测试与构建
 

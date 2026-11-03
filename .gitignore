@@ -1,8 +1,8 @@
 apps/web/node_modules/
 apps/web/dist/
-apps/cloud-admin-web/node_modules/
-apps/cloud-admin-web/dist/
-apps/cloud-admin-web/public/runtime-config.js
+apps/cloud-server/admin-web/node_modules/
+apps/cloud-server/admin-web/dist/
+apps/cloud-server/admin-web/public/runtime-config.js
 data/
 tmp-auth-data/
 apps/cloud-server/.env

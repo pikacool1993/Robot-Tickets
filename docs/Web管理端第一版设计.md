@@ -4,7 +4,7 @@
 
 ## 1. 目标与范围
 
-管理员通过浏览器登录，完成代理商账号创建、凭据查看与重置、状态管理、设备上限设置、删除及关联审计查询。Web 管理端位于 `apps/cloud-admin-web`，是专属于 `cloud-server` 的独立前端应用，与 Go 服务分开构建；Docker Compose 部署编排仍由 `apps/cloud-server` 管理。数据库采用当前已选定的 MySQL 8.0。
+管理员通过浏览器登录，完成代理商账号创建、凭据查看与重置、状态管理、设备上限设置、删除及关联审计查询。Web 管理端位于 `apps/cloud-server/admin-web`，作为 `cloud-server` 的前端源码，与 Go 服务一起构建为单个镜像并由同一服务进程提供；Docker Compose 部署编排由 `apps/cloud-server` 管理。数据库采用当前已选定的 MySQL 8.0。
 
 第一版包含登录、代理商列表、创建弹窗、详情抽屉和详情内审计记录。暂不实现全局审计页面、多管理员角色管理、代理商权限配置、代理商业务数据或 Windows 客户端配置导入。代理商独立密钥配置下载依赖服务端密钥管理完成，本版不展示尚不可用的下载按钮。
 
@@ -14,12 +14,12 @@
 - 建议采用 Element Plus 提供表格、表单、弹窗、抽屉和反馈组件，统一中文文案。
 - 组件局部状态处理弹窗与表单；独立认证模块管理登录身份和 Token。
 - 公共 API 客户端统一完成认证、超时和错误映射；管理员后台接口使用普通 JSON，请求不再进行 AES 信封包装；页面不直接使用裸 fetch。
-- Nginx 提供静态资源并代理 `/api/` 至 `cloud-server:8080`，浏览器使用同源地址。
+- Go 服务端提供前端静态资源和 `/api/` 接口，浏览器通过同源地址访问，不额外部署 Nginx 或 Web 容器。
 
 建议目录：
 
 ```text
-apps/cloud-admin-web/
+apps/cloud-server/admin-web/
   src/
     api/                 # API 客户端、认证和代理商接口
     crypto/              # AES-GCM 信封与互操作测试
@@ -31,7 +31,6 @@ apps/cloud-admin-web/
     types/
     styles/
   Dockerfile
-  nginx.conf
   package.json
 ```
 
@@ -157,9 +156,9 @@ active_devices 定义为未撤销且未过期的实例会话数。审计查询�
 
 ## 8. Docker 部署与配置
 
-在现有 MySQL + cloud-server Compose 中新增 web 服务，Node 构建静态资源后交由 Nginx 提供。浏览器建议通过 `http://localhost:8081` 访问 Web；8081 为建议默认端口，可由 WEB_PORT 配置。Nginx 将 `/api/` 原样转发至服务端，不解密业务体；SPA 刷新路由使用 index.html 回退。
+现有 MySQL + cloud-server Compose 只需运行数据库和服务端。根 Dockerfile 在一个镜像构建过程中先用 Node 构建 `admin-web`，再构建 Go 服务端并将静态资源复制到镜像。Go 服务端同时提供 Web 页面和 `/api/`；浏览器通过 `http://localhost:8080` 访问，SPA 路由刷新回退到 `index.html`。
 
-运行时配置通过容器环境生成，仅包含 API 相对前缀、管理员 key_id 和对应传输密钥。配置文件不缓存，密钥不得从 `.env` 复制进 Git；构建上下文通过 `.dockerignore` 排除 `.env`、node_modules、dist 和本地秘密。现有数据库密码加密密钥必须持久保存，重启不能重新随机生成，否则数据库历史密码无法解密。
+运行时配置使用 API 相对前缀，不包含管理员传输密钥；管理员后台 API 使用普通 JSON。构建上下文通过 `.dockerignore` 排除 `.env`、node_modules、dist 和本地秘密。现有数据库密码加密密钥必须持久保存，重启不能重新随机生成，否则数据库历史密码无法解密。
 
 Vite 本地开发代理 `/api/`，与 Docker 同源路径一致。上线使用 Compose `up --build -d` 重建，不把开发服务器作为生产入口。新增后的访问地址和命令同步进 README 与 DOCKER_COMMANDS。
 
@@ -176,7 +175,7 @@ Vite 本地开发代理 `/api/`，与 Docker 同源路径一致。上线使用 C
 
 ## 10. 实施顺序
 
-先修复认证/数据库与信封错误处理，补齐查询契约和联调测试；再实现公共加密客户端、认证与布局；接着完成代理商表格、创建和详情操作；最后接入审计、Docker Web 服务、浏览器端到端验证并更新运行文档。
+先修复认证/数据库与信封错误处理，补齐查询契约和联调测试；再实现认证与布局；接着完成代理商表格、创建和详情操作；最后接入审计、将前端与 Go 服务整合为单个 Docker 镜像、浏览器端到端验证并更新运行文档。
 
 ## 11. 参考
 

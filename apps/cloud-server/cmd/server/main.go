@@ -10,9 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -81,6 +84,11 @@ func main() {
 	s := &Server{db: db, keys: keys, credentialKey: credentialKey, credentialKeyVersion: version, adminKeyID: "admin-v1"}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	webDir := os.Getenv("ADMIN_WEB_DIR")
+	if webDir == "" {
+		webDir = "admin-web/dist"
+	}
+	mux.Handle("/", adminWebHandler(webDir))
 	mux.HandleFunc("POST /api/admin/v1/auth/login", s.adminLogin)
 	mux.HandleFunc("POST /api/admin/v1/auth/logout", s.adminLogout)
 	mux.HandleFunc("GET /api/admin/v1/auth/me", s.adminMe)
@@ -102,6 +110,25 @@ func main() {
 	}
 	log.Printf("cloud-server listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, securityHeaders(mux)))
+}
+
+func adminWebHandler(webDir string) http.Handler {
+	files := http.FileServer(http.Dir(webDir))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
+
+		filePath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if filePath != "" && filePath != "." && fs.ValidPath(filePath) {
+			if _, err := os.Stat(filepath.Join(webDir, filepath.FromSlash(filePath))); err == nil {
+				files.ServeHTTP(w, r)
+				return
+			}
+		}
+		http.ServeFile(w, r, webDir+string(os.PathSeparator)+"index.html")
+	})
 }
 
 func bootstrapAdmin(ctx context.Context, db *sql.DB) error {

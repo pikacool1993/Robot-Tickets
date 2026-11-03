@@ -20,6 +20,7 @@ docker compose --env-file .env -f docker-compose.dev.yml up --build -d
 
 - `--build`：重新构建 `cloud-server` 镜像。
 - `-d`：后台运行。
+- `cloud-server` 镜像会在一次构建中编译 `admin-web` 和 Go 服务端；浏览器访问 `http://localhost:8080` 打开管理员后台。
 - MySQL 第一次启动时自动创建数据库和业务账号。
 - `cloud-server` 会等待 MySQL 健康检查通过后启动。
 - 服务启动时自动创建授权模块数据表。
