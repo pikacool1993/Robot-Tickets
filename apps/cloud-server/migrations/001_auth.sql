@@ -76,3 +76,20 @@ CREATE TABLE IF NOT EXISTS audit_events (
     CONSTRAINT fk_audit_admin FOREIGN KEY (actor_admin_id) REFERENCES admin_users(id) ON DELETE SET NULL,
     CONSTRAINT fk_audit_agent FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS client_identity_lock (
+    id INT PRIMARY KEY
+) ENGINE=InnoDB;
+INSERT IGNORE INTO client_identity_lock(id) VALUES(1);
+
+CREATE TABLE IF NOT EXISTS client_instance_bindings (
+    client_instance_id CHAR(36) PRIMARY KEY,
+    agent_id CHAR(36) NOT NULL,
+    client_number VARCHAR(128) NOT NULL UNIQUE,
+    CONSTRAINT fk_client_bindings_agent FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+INSERT IGNORE INTO client_instance_bindings(client_instance_id,agent_id,client_number)
+SELECT client_instance_id,agent_id,client_number FROM agent_sessions
+WHERE revoked_at IS NULL AND expires_at>CURRENT_TIMESTAMP(6)
+ORDER BY created_at DESC,id DESC;

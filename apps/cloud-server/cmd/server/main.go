@@ -31,6 +31,7 @@ type Server struct {
 	credentialKey        []byte
 	credentialKeyVersion string
 	adminKeyID           string
+	configExport         *configExportSettings
 }
 
 func main() {
@@ -82,6 +83,10 @@ func main() {
 	}
 
 	s := &Server{db: db, keys: keys, credentialKey: credentialKey, credentialKeyVersion: version, adminKeyID: "admin-v1"}
+	s.configExport, err = loadConfigExport(keys, credentialKey)
+	if err != nil {
+		log.Fatal(err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	webDir := os.Getenv("ADMIN_WEB_DIR")
@@ -92,6 +97,7 @@ func main() {
 	mux.HandleFunc("POST /api/admin/v1/auth/login", s.adminLogin)
 	mux.HandleFunc("POST /api/admin/v1/auth/logout", s.adminLogout)
 	mux.HandleFunc("GET /api/admin/v1/auth/me", s.adminMe)
+	mux.HandleFunc("POST /api/admin/v1/client-config/export", s.exportClientConfig)
 	mux.HandleFunc("POST /api/admin/v1/agents", s.createAgent)
 	mux.HandleFunc("GET /api/admin/v1/agents", s.listAgents)
 	mux.HandleFunc("GET /api/admin/v1/agents/{id}", s.getAgent)

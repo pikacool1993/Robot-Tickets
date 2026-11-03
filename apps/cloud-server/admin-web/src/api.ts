@@ -4,6 +4,23 @@ const tokenKey = 'cloud_admin_token'
 
 export function token() { return sessionStorage.getItem(tokenKey) }
 export function clearToken() { sessionStorage.removeItem(tokenKey) }
+async function exportClientConfig() {
+  const t = token()
+  const response = await fetch(`${API}/client-config/export`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(t ? { Authorization: `Bearer ${t}` } : {}) }, body: '{}'
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const error = new Error(payload?.message || '配置导出失败'); (error as any).status = response.status; throw error
+  }
+  if (!(response.headers.get('Content-Type') || '').startsWith('application/octet-stream')) throw new Error('配置文件响应格式错误')
+  const blob = await response.blob()
+  const name = 'bootstrap.cfg'
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a'); link.href = url; link.download = name
+  document.body.appendChild(link); link.click(); link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
 async function request(path: string, method = 'GET', body?: unknown) {
   const headers: Record<string, string> = {}; const t = token(); if (t) headers.Authorization = `Bearer ${t}`
   if (body !== undefined) { headers['Content-Type'] = 'application/json'; body = body }
@@ -13,6 +30,7 @@ async function request(path: string, method = 'GET', body?: unknown) {
   return payload?.data
 }
 export const api = {
+  exportClientConfig,
   login: async (username: string, password: string) => { const data = await request('/auth/login', 'POST', { username, password }); sessionStorage.setItem(tokenKey, data.access_token); return data.admin },
   me: () => request('/auth/me'), logout: () => request('/auth/logout', 'POST', {}),
   agents: () => request('/agents'), createAgent: (data: any) => request('/agents', 'POST', data),

@@ -6,3 +6,11 @@ apps/cloud-server/admin-web/public/runtime-config.js
 data/
 tmp-auth-data/
 apps/cloud-server/.env
+apps/local-agent/frontend/node_modules/
+apps/local-agent/frontend/dist/
+apps/local-agent/frontend/wailsjs/
+apps/local-agent/build/bin/
+apps/local-agent/build/windows/*.syso
+apps/local-agent/*.syso
+apps/local-agent/data/
+apps/local-agent/internal/trust/assets/local.json

@@ -37,6 +37,9 @@ func (k Keyring) Open(e Envelope) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(nonce) != aead.NonceSize() {
+		return nil, errors.New("invalid nonce length")
+	}
 	return aead.Open(nil, nonce, ct, aad(e.Version, e.KeyID))
 }
 
@@ -107,6 +110,9 @@ func OpenSecret(key, ciphertext, nonce []byte) (string, error) {
 	aead, err := makeAEAD(key)
 	if err != nil {
 		return "", err
+	}
+	if len(nonce) != aead.NonceSize() {
+		return "", errors.New("invalid nonce length")
 	}
 	plain, err := aead.Open(nil, nonce, ciphertext, []byte("agent-credential:v1"))
 	return string(plain), err

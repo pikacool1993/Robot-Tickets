@@ -171,7 +171,7 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.adminKey(w, r); !ok {
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), "SELECT id,name,username,status,max_devices,last_login_at,last_login_ip,created_at FROM agents ORDER BY created_at DESC LIMIT 200")
+	rows, err := s.db.QueryContext(r.Context(), "SELECT a.id,a.name,a.username,a.status,a.max_devices,a.last_login_at,a.last_login_ip,a.created_at,(SELECT COUNT(*) FROM agent_sessions x WHERE x.agent_id=a.id AND x.revoked_at IS NULL AND x.expires_at>NOW(6) AND a.status='enabled') FROM agents a ORDER BY a.created_at DESC,a.id DESC LIMIT 200")
 	if err != nil {
 		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Internal error")
 		return
@@ -180,31 +180,74 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	items := []map[string]any{}
 	for rows.Next() {
 		var id, name, user, status string
-		var max int
+		var max, active int
 		var last *time.Time
 		var ip *string
 		var created time.Time
-		if rows.Scan(&id, &name, &user, &status, &max, &last, &ip, &created) == nil {
-			items = append(items, map[string]any{"id": id, "name": name, "username": user, "status": status, "max_devices": max, "last_login_at": last, "last_login_ip": ip, "created_at": created})
+		if err := rows.Scan(&id, &name, &user, &status, &max, &last, &ip, &created, &active); err != nil {
+			s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read agents")
+			return
 		}
+		items = append(items, map[string]any{"id": id, "name": name, "username": user, "status": status, "max_devices": max, "active_devices": active, "last_login_at": last, "last_login_ip": ip, "created_at": created})
 	}
+	if err := rows.Err(); err != nil {
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read agents")
+		return
+	}
+
 	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", items})
 }
 func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.adminKey(w, r); !ok {
 		return
 	}
-	var out map[string]any = map[string]any{}
+	tx, err := s.db.BeginTx(r.Context(), &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read agent")
+		return
+	}
+	defer tx.Rollback()
 	var id, name, user, status string
 	var max int
 	var last *time.Time
 	var ip *string
-	err := s.db.QueryRowContext(r.Context(), "SELECT id,name,username,status,max_devices,last_login_at,last_login_ip FROM agents WHERE id=?", r.PathValue("id")).Scan(&id, &name, &user, &status, &max, &last, &ip)
-	if err != nil {
+	var created time.Time
+	err = tx.QueryRowContext(r.Context(), "SELECT id,name,username,status,max_devices,last_login_at,last_login_ip,created_at FROM agents WHERE id=?", r.PathValue("id")).Scan(&id, &name, &user, &status, &max, &last, &ip, &created)
+	if err == sql.ErrNoRows {
 		s.adminFailure(w, 404, s.adminKeyID, "not_found", "Agent not found")
 		return
 	}
-	out = map[string]any{"id": id, "name": name, "username": user, "status": status, "max_devices": max, "last_login_at": last, "last_login_ip": ip}
+	if err != nil {
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read agent")
+		return
+	}
+	rows, err := tx.QueryContext(r.Context(), "SELECT id,client_number,client_instance_id,created_at,expires_at,login_ip FROM agent_sessions WHERE agent_id=? AND revoked_at IS NULL AND expires_at>NOW(6) AND ?='enabled' ORDER BY created_at DESC,id DESC", id, status)
+	if err != nil {
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read devices")
+		return
+	}
+	devices := []map[string]any{}
+	for rows.Next() {
+		var sessionID, number, instance, loginIP string
+		var loginAt, expires time.Time
+		if err := rows.Scan(&sessionID, &number, &instance, &loginAt, &expires, &loginIP); err != nil {
+			rows.Close()
+			s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read devices")
+			return
+		}
+		devices = append(devices, map[string]any{"id": sessionID, "client_number": number, "client_instance_id": instance, "login_at": loginAt, "expires_at": expires, "login_ip": loginIP})
+	}
+	err = rows.Err()
+	closeErr := rows.Close()
+	if err != nil || closeErr != nil {
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read devices")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read agent")
+		return
+	}
+	out := map[string]any{"id": id, "name": name, "username": user, "status": status, "max_devices": max, "active_devices": len(devices), "devices": devices, "last_login_at": last, "last_login_ip": ip, "created_at": created}
 	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", out})
 }
 
@@ -471,21 +514,71 @@ func (s *Server) agentLogin(w http.ResponseWriter, r *http.Request) {
 		s.failure(w, 401, keyID, "invalid_credentials", "Invalid credentials")
 		return
 	}
-	var owner string
+	// Serialize instance/number changes across agents as numbers are globally unique.
+	var guard int
+	if e = tx.QueryRowContext(r.Context(), "SELECT id FROM client_identity_lock WHERE id=1 FOR UPDATE").Scan(&guard); e != nil {
+		s.failure(w, 500, keyID, "internal_error", "Internal error")
+		return
+	}
+	var owner, numberInstance string
+	e = tx.QueryRowContext(r.Context(), "SELECT agent_id,client_instance_id FROM client_instance_bindings WHERE client_number=?", in.ClientNumber).Scan(&owner, &numberInstance)
+	if e != nil && e != sql.ErrNoRows {
+		s.failure(w, 500, keyID, "internal_error", "Internal error")
+		return
+	}
+	if e == nil && (owner != id || numberInstance != in.ClientInstanceID) {
+		s.failure(w, 409, keyID, "client_number_conflict", "Client number unavailable")
+		return
+	}
+	// Legacy registrations remain reserved to their original agent until claimed.
 	e = tx.QueryRowContext(r.Context(), "SELECT agent_id FROM client_registrations WHERE client_number=?", in.ClientNumber).Scan(&owner)
+	if e != nil && e != sql.ErrNoRows {
+		s.failure(w, 500, keyID, "internal_error", "Internal error")
+		return
+	}
 	if e == nil && owner != id {
 		s.failure(w, 409, keyID, "client_number_conflict", "Client number unavailable")
 		return
 	}
 	if e == sql.ErrNoRows {
-		_, e = tx.ExecContext(r.Context(), "INSERT INTO client_registrations(client_number,agent_id) VALUES(?,?)", in.ClientNumber, id)
-		if e != nil {
-			s.failure(w, 409, keyID, "client_number_conflict", "Client number unavailable")
+		if _, e = tx.ExecContext(r.Context(), "INSERT INTO client_registrations(client_number,agent_id) VALUES(?,?)", in.ClientNumber, id); e != nil {
+			s.failure(w, 500, keyID, "internal_error", "Internal error")
 			return
 		}
 	}
-	_, _ = tx.ExecContext(r.Context(), "UPDATE agent_sessions SET revoked_at=now() WHERE agent_id=? AND client_instance_id=? AND revoked_at IS NULL", id, in.ClientInstanceID)
-	_, _ = tx.ExecContext(r.Context(), "DELETE FROM agent_sessions WHERE agent_id=? AND expires_at<=now()", id)
+	// Release the old number only inside this successful-login transaction.
+	var oldNumber string
+	e = tx.QueryRowContext(r.Context(), "SELECT client_number FROM client_instance_bindings WHERE client_instance_id=?", in.ClientInstanceID).Scan(&oldNumber)
+	if e != nil && e != sql.ErrNoRows {
+		s.failure(w, 500, keyID, "internal_error", "Internal error")
+		return
+	}
+	if e == nil && oldNumber != in.ClientNumber {
+		if _, e = tx.ExecContext(r.Context(), "DELETE FROM agent_sessions WHERE client_number=?", oldNumber); e != nil {
+			s.failure(w, 500, keyID, "internal_error", "Internal error")
+			return
+		}
+		if _, e = tx.ExecContext(r.Context(), "DELETE FROM client_instance_bindings WHERE client_instance_id=?", in.ClientInstanceID); e != nil {
+			s.failure(w, 500, keyID, "internal_error", "Internal error")
+			return
+		}
+		if _, e = tx.ExecContext(r.Context(), "DELETE FROM client_registrations WHERE client_number=?", oldNumber); e != nil {
+			s.failure(w, 500, keyID, "internal_error", "Internal error")
+			return
+		}
+	}
+	if _, e = tx.ExecContext(r.Context(), "INSERT INTO client_instance_bindings(client_instance_id,agent_id,client_number) VALUES(?,?,?) ON DUPLICATE KEY UPDATE agent_id=VALUES(agent_id),client_number=VALUES(client_number)", in.ClientInstanceID, id, in.ClientNumber); e != nil {
+		s.failure(w, 500, keyID, "internal_error", "Internal error")
+		return
+	}
+	if _, e = tx.ExecContext(r.Context(), "UPDATE agent_sessions SET revoked_at=now() WHERE agent_id=? AND client_instance_id=? AND revoked_at IS NULL", id, in.ClientInstanceID); e != nil {
+		s.failure(w, 500, keyID, "internal_error", "Internal error")
+		return
+	}
+	if _, e = tx.ExecContext(r.Context(), "DELETE FROM agent_sessions WHERE agent_id=? AND expires_at<=now()", id); e != nil {
+		s.failure(w, 500, keyID, "internal_error", "Internal error")
+		return
+	}
 	var count int
 	if e = tx.QueryRowContext(r.Context(), "SELECT count(*) FROM agent_sessions WHERE agent_id=? AND revoked_at IS NULL AND expires_at>now()", id).Scan(&count); e != nil {
 		s.failure(w, 500, keyID, "internal_error", "Internal error")
@@ -506,8 +599,14 @@ func (s *Server) agentLogin(w http.ResponseWriter, r *http.Request) {
 		s.failure(w, 500, keyID, "internal_error", "Internal error")
 		return
 	}
-	_, _ = tx.ExecContext(r.Context(), "UPDATE agents SET last_login_at=now(),last_login_ip=?,updated_at=now() WHERE id=?", clientIP(r), id)
-	_, _ = tx.ExecContext(r.Context(), "INSERT INTO audit_events(actor_type,agent_id,event_type,source_ip,client_number,client_instance_id,result) VALUES('agent',?,'agent_login_succeeded',?,?,?,'success')", id, clientIP(r), in.ClientNumber, in.ClientInstanceID)
+	if _, e = tx.ExecContext(r.Context(), "UPDATE agents SET last_login_at=now(),last_login_ip=?,updated_at=now() WHERE id=?", clientIP(r), id); e != nil {
+		s.failure(w, 500, keyID, "internal_error", "Internal error")
+		return
+	}
+	if _, e = tx.ExecContext(r.Context(), "INSERT INTO audit_events(actor_type,agent_id,event_type,source_ip,client_number,client_instance_id,result,details) VALUES('agent',?,'agent_login_succeeded',?,?,?,'success',?)", id, clientIP(r), in.ClientNumber, in.ClientInstanceID, jsonBytes(map[string]any{})); e != nil {
+		s.failure(w, 500, keyID, "internal_error", "Internal error")
+		return
+	}
 	if e = tx.Commit(); e != nil {
 		s.failure(w, 500, keyID, "internal_error", "Internal error")
 		return
@@ -531,7 +630,10 @@ func (s *Server) agentLogout(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, _ = s.db.ExecContext(r.Context(), "UPDATE agent_sessions SET revoked_at=now() WHERE token_hash=?", hashToken(bearer(r)))
+	if _, err := s.db.ExecContext(r.Context(), "UPDATE agent_sessions SET revoked_at=now() WHERE token_hash=?", hashToken(bearer(r))); err != nil {
+		s.failure(w, 500, agentKeyID(), "internal_error", "Internal error")
+		return
+	}
 	s.audit(r.Context(), "agent", &id, "agent_logout", clientIP(r), "success", nil)
 	s.respond(w, 200, agentKeyID(), payload{"ok", "", nil})
 }
