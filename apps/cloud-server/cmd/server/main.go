@@ -95,6 +95,7 @@ func main() {
 	mux.HandleFunc("POST /api/admin/v1/agents", s.createAgent)
 	mux.HandleFunc("GET /api/admin/v1/agents", s.listAgents)
 	mux.HandleFunc("GET /api/admin/v1/agents/{id}", s.getAgent)
+	mux.HandleFunc("PATCH /api/admin/v1/agents/{id}", s.updateAgent)
 	mux.HandleFunc("POST /api/admin/v1/agents/{id}/credential/view", s.viewCredential)
 	mux.HandleFunc("POST /api/admin/v1/agents/{id}/credential/reset", s.resetCredential)
 	mux.HandleFunc("PATCH /api/admin/v1/agents/{id}/status", s.setAgentStatus)
@@ -115,6 +116,10 @@ func main() {
 func adminWebHandler(webDir string) http.Handler {
 	files := http.FileServer(http.Dir(webDir))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.NotFound(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/healthz" {
 			http.NotFound(w, r)
 			return

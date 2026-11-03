@@ -207,6 +207,60 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 	out = map[string]any{"id": id, "name": name, "username": user, "status": status, "max_devices": max, "last_login_at": last, "last_login_ip": ip}
 	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", out})
 }
+
+func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
+	admin, ok := s.adminKey(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Name     string `json:"name"`
+		Username string `json:"username"`
+	}
+	if !s.adminRequest(w, r, s.adminKeyID, &in) {
+		return
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	in.Username = strings.ToLower(strings.TrimSpace(in.Username))
+	if in.Name == "" || len(in.Name) > 200 || !validUsername(in.Username) {
+		s.adminFailure(w, http.StatusBadRequest, s.adminKeyID, "invalid_input", "Invalid agent fields")
+		return
+	}
+
+	id := r.PathValue("id")
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		s.adminFailure(w, http.StatusInternalServerError, s.adminKeyID, "internal_error", "Internal error")
+		return
+	}
+	defer tx.Rollback()
+	var oldName, oldUsername string
+	if err = tx.QueryRowContext(r.Context(), "SELECT name,username FROM agents WHERE id=? FOR UPDATE", id).Scan(&oldName, &oldUsername); err != nil {
+		s.adminFailure(w, http.StatusNotFound, s.adminKeyID, "not_found", "Agent not found")
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), "UPDATE agents SET name=?,username=?,updated_at=NOW(6) WHERE id=?", in.Name, in.Username, id); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") || strings.Contains(strings.ToLower(err.Error()), "1062") {
+			s.adminFailure(w, http.StatusConflict, s.adminKeyID, "username_conflict", "Username already exists")
+			return
+		}
+		s.adminFailure(w, http.StatusInternalServerError, s.adminKeyID, "internal_error", "Internal error")
+		return
+	}
+	if oldName != in.Name || oldUsername != in.Username {
+		details := map[string]string{"old_name": oldName, "new_name": in.Name, "old_username": oldUsername, "new_username": in.Username}
+		if _, err = tx.ExecContext(r.Context(), "INSERT INTO audit_events(actor_type,actor_admin_id,agent_id,event_type,source_ip,result,details) VALUES('admin',?,?,'agent_profile_updated',?,'success',?)", admin, id, clientIP(r), jsonBytes(details)); err != nil {
+			s.adminFailure(w, http.StatusInternalServerError, s.adminKeyID, "internal_error", "Internal error")
+			return
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		s.adminFailure(w, http.StatusInternalServerError, s.adminKeyID, "internal_error", "Internal error")
+		return
+	}
+	s.adminRespond(w, http.StatusOK, s.adminKeyID, payload{"ok", "", map[string]string{"id": id, "name": in.Name, "username": in.Username}})
+}
+
 func (s *Server) viewCredential(w http.ResponseWriter, r *http.Request) {
 	admin, ok := s.adminKey(w, r)
 	if !ok {

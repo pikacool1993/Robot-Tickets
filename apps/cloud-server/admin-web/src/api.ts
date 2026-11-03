@@ -16,7 +16,7 @@ export const api = {
   login: async (username: string, password: string) => { const data = await request('/auth/login', 'POST', { username, password }); sessionStorage.setItem(tokenKey, data.access_token); return data.admin },
   me: () => request('/auth/me'), logout: () => request('/auth/logout', 'POST', {}),
   agents: () => request('/agents'), createAgent: (data: any) => request('/agents', 'POST', data),
-  agent: (id: string) => request(`/agents/${id}`), viewCredential: (id: string) => request(`/agents/${id}/credential/view`, 'POST', {}),
+  agent: (id: string) => request(`/agents/${id}`), updateAgent: (id: string, data: any) => request(`/agents/${id}`, 'PATCH', data), viewCredential: (id: string) => request(`/agents/${id}/credential/view`, 'POST', {}),
   resetCredential: (id: string) => request(`/agents/${id}/credential/reset`, 'POST', {}),
   setStatus: (id: string, status: string) => request(`/agents/${id}/status`, 'PATCH', { status }),
   setLimit: (id: string, max_devices: number) => request(`/agents/${id}/device-limit`, 'PATCH', { max_devices }),

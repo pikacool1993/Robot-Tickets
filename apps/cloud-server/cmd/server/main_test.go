@@ -38,7 +38,8 @@ func TestAdminWebHandlerServesAssetsAndSPA(t *testing.T) {
 		want string
 		code int
 	}{
-		{path: "/", want: "index", code: http.StatusOK},
+		{path: "/", code: http.StatusNotFound},
+		{path: "/admin/login", want: "index", code: http.StatusOK},
 		{path: "/agents", want: "index", code: http.StatusOK},
 		{path: "/assets/app.js", want: "asset", code: http.StatusOK},
 		{path: "/api/unknown", code: http.StatusNotFound},
