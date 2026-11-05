@@ -1,0 +1,90 @@
+{
+  "stadium": "凤凰山专业足球场",
+  "tiers": [
+    { "tier": "VIP", "price": 1288, "areas": [
+      { "code": "vip1", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "vip2", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "vip3", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" }
+    ] },
+    { "tier": "S", "price": 400, "areas": [
+      { "code": "127", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "128", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "129", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" }
+    ] },
+    { "tier": "A", "price": 220, "areas": [
+      { "code": "109", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "110", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "111", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "112", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "113", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "114", "level": "首层看台", "specialArea": "省球迷协会", "isSaleable": true, "restriction": "" },
+      { "code": "115", "level": "首层看台", "specialArea": "省球迷协会", "isSaleable": true, "restriction": "" },
+      { "code": "125", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "126", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "130", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "131", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" }
+    ] },
+    { "tier": "B", "price": 180, "areas": [
+      { "code": "101", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "102", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "103", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "104", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "105", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "106", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "107", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "108", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "116", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "117", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "123", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "124", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "132", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "513", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "514", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "515", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "531", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "532", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "533", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" }
+    ] },
+    { "tier": "C", "price": 150, "areas": [
+      { "code": "511", "level": "顶层看台", "specialArea": "三协合一", "isSaleable": true, "restriction": "" },
+      { "code": "512", "level": "顶层看台", "specialArea": "蓉城战线", "isSaleable": true, "restriction": "" },
+      { "code": "516", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "517", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "529", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "530", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "534", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "535", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" }
+    ] },
+    { "tier": "D", "price": 120, "areas": [
+      { "code": "118", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "119", "level": "首层看台", "specialArea": "刀锋看台", "isSaleable": true, "restriction": "" },
+      { "code": "120", "level": "首层看台", "specialArea": "刀锋看台", "isSaleable": true, "restriction": "" },
+      { "code": "121", "level": "首层看台", "specialArea": "刀锋看台", "isSaleable": true, "restriction": "" },
+      { "code": "122", "level": "首层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "536", "level": "顶层看台", "specialArea": "客队看台", "isSaleable": false, "restriction": "" },
+      { "code": "501", "level": "顶层看台", "specialArea": "客队看台", "isSaleable": false, "restriction": "" },
+      { "code": "502", "level": "顶层看台", "specialArea": "客队看台", "isSaleable": false, "restriction": "" },
+      { "code": "508", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "509", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "510", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "518", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "519", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "520", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "526", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "527", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "528", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" }
+    ] },
+    { "tier": "E", "price": 100, "areas": [
+      { "code": "503", "level": "顶层看台", "specialArea": "客队看台", "isSaleable": false, "restriction": "" },
+      { "code": "504", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "505", "level": "顶层看台", "specialArea": "505协会", "isSaleable": true, "restriction": "" },
+      { "code": "506", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "507", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "521", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "522", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "523", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "524", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" },
+      { "code": "525", "level": "顶层看台", "specialArea": "", "isSaleable": true, "restriction": "" }
+    ] }
+  ]
+}

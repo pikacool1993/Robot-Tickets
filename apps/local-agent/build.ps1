@@ -20,6 +20,13 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Frontend build failed" }
     } finally { Pop-Location }
     New-Item -ItemType Directory -Force build/bin/config | Out-Null
+    $seatCatalog = Join-Path $PSScriptRoot "config/seat-catalog.json"
+    if (!(Test-Path -LiteralPath $seatCatalog)) { throw "Missing config/seat-catalog.json" }
+    Get-Content -LiteralPath $seatCatalog -Raw -Encoding UTF8 | ConvertFrom-Json | Out-Null
+    # Preserve an operator's existing runtime catalog. The source copy is for fresh packages.
+    if (!(Test-Path -LiteralPath "build/bin/config/seat-catalog.json")) {
+        Copy-Item -LiteralPath $seatCatalog -Destination "build/bin/config/seat-catalog.json"
+    }
     $previousOS = $env:GOOS
     $previousArch = $env:GOARCH
     try {

@@ -12,6 +12,7 @@ import (
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
 	"robot/apps/local-agent/internal/cloud"
 	"robot/apps/local-agent/internal/store"
+	"robot/apps/local-agent/internal/tasks"
 	"strings"
 	"sync"
 	"time"
@@ -48,15 +49,21 @@ type Service struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	log     *slog.Logger
+	tasks   *tasks.Service
 }
 
 func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed25519.PublicKey, logger *slog.Logger) (*Service, error) {
+	taskService, err := tasks.New(root, db)
+	if err != nil {
+		return nil, err
+	}
 	id, err := db.InstanceID()
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{store: db, root: root, enc: enc, sign: sign, state: State{InstanceID: id, Connection: "未登录"}, ctx: ctx, cancel: cancel, done: make(chan struct{}), log: logger}
+	s.tasks = taskService
 	data, err := db.Get("config")
 	if err != nil {
 		s.state.Notice = "本地通信配置无法读取，请重新导入 .cfg 文件"

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"robot/apps/local-agent/internal/agent"
 	"robot/apps/local-agent/internal/store"
+	"robot/apps/local-agent/internal/tasks"
 	"robot/apps/local-agent/internal/trust"
 	"strings"
 	"sync"
@@ -47,6 +48,12 @@ func (a *App) GetState() agent.State                  { return a.service.Snapsho
 func (a *App) GetRememberedForm() (agent.Form, error) { return a.service.Remembered() }
 func (a *App) Login(form agent.Form) error            { return a.service.Login(form) }
 func (a *App) Logout() error                          { return a.service.Logout() }
+func (a *App) GetTasks() (tasks.View, error)          { return a.service.TaskView() }
+func (a *App) CreateTask() (tasks.Task, error)        { return a.service.CreateTask() }
+func (a *App) SaveTaskSeats(id int64, mode string, selected []string) error {
+	return a.service.SaveTaskSeats(id, mode, selected)
+}
+func (a *App) DeleteTask(id int64) error { return a.service.DeleteTask(id) }
 func (a *App) ImportConfig() error {
 	path, err := wruntime.OpenFileDialog(a.ctx, wruntime.OpenDialogOptions{Title: "选择客户端通信配置", Filters: []wruntime.FileFilter{{DisplayName: "Robot 配置文件 (*.cfg)", Pattern: "*.cfg"}}})
 	if err != nil {
@@ -133,7 +140,7 @@ func main() {
 	defer service.Close()
 	app := &App{service: service}
 	lockID := fmt.Sprintf("robot-agent-%x", sha256.Sum256([]byte(strings.ToLower(root))))
-	err = wails.Run(&options.App{Title: "Robot · 本地客户端", Width: 1040, Height: 740, MinWidth: 820, MinHeight: 640, BackgroundColour: options.NewRGB(245, 246, 248), AssetServer: &assetserver.Options{Assets: assets}, OnStartup: app.startup, OnBeforeClose: app.beforeClose, Bind: []interface{}{app}, SingleInstanceLock: &options.SingleInstanceLock{UniqueId: lockID, OnSecondInstanceLaunch: func(_ options.SecondInstanceData) { app.focus() }}, Windows: &windows.Options{WebviewUserDataPath: filepath.Join(dataDir, "webview"), Theme: windows.Light}})
+	err = wails.Run(&options.App{Title: "Robot · 本地客户端", Width: 1040, Height: 740, MinWidth: 360, MinHeight: 560, BackgroundColour: options.NewRGB(242, 245, 248), AssetServer: &assetserver.Options{Assets: assets}, OnStartup: app.startup, OnBeforeClose: app.beforeClose, Bind: []interface{}{app}, SingleInstanceLock: &options.SingleInstanceLock{UniqueId: lockID, OnSecondInstanceLaunch: func(_ options.SecondInstanceData) { app.focus() }}, Windows: &windows.Options{WebviewUserDataPath: filepath.Join(dataDir, "webview"), Theme: windows.Light}})
 	if err != nil {
 		logger.Error("desktop runtime failed")
 		fatal("桌面窗口启动失败，请检查 WebView2 是否正确安装")

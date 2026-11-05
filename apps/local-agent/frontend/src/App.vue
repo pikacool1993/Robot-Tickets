@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { backend, type State, type Form } from './bridge'
+import TaskWorkspace from './TaskWorkspace.vue'
 const state = ref<State | null>(null)
 const form = reactive<Form>({ username: '', password: '', client_number: '', remember: false })
 const error = ref(''); const busy = ref(false); const ready = ref(false); const reveal = ref(false)
@@ -45,5 +46,5 @@ onUnmounted(() => { if (timer) clearInterval(timer); form.password = '' })
       </section>
     </div><footer>本地配置与登录信息按实例独立保存<span>Robot / Local Agent</span></footer>
   </main>
-  <main v-else class="workspace" aria-label="工作空间"></main>
+  <TaskWorkspace v-else :state="state" @logout="run(async () => { await backend().Logout() })" />
 </template>

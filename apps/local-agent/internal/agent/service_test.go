@@ -85,6 +85,9 @@ func TestLoginRememberRestartAndExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	form := Form{"user", "test-password", "A", true}
+	if _, err := s.CreateTask(); err == nil {
+		t.Fatal("unauthenticated task creation allowed")
+	}
 	if err := s.Login(form); err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +97,9 @@ func TestLoginRememberRestartAndExpiry(t *testing.T) {
 	remembered, err := s.Remembered()
 	if err != nil || remembered != form {
 		t.Fatal("remembered form mismatch")
+	}
+	if _, err := s.CreateTask(); err != nil {
+		t.Fatal(err)
 	}
 	s.Close()
 	s, err = New(dir, db, nil, nil, logger)
@@ -109,16 +115,23 @@ func TestLoginRememberRestartAndExpiry(t *testing.T) {
 	}
 	form.Remember = false
 	form.ClientNumber = "B"
+	form.Username = "another-agent"
 	if err := s.Login(form); err != nil {
 		t.Fatal(err)
 	}
 	if remembered, _ := s.Remembered(); remembered.Remember || remembered.Password != "" {
 		t.Fatal("unchecked form was not cleared")
 	}
+	if tasks, err := s.TaskView(); err != nil || len(tasks.Tasks) != 1 || tasks.Tasks[0].ID != 1 {
+		t.Fatal("switching agents lost local tasks", err)
+	}
 	// Expiry must return to login even without another business request.
 	s.mu.Lock()
 	s.session.ExpiresAt = time.Now().Add(-time.Second)
 	s.mu.Unlock()
+	if _, err := s.TaskView(); err == nil {
+		t.Fatal("expired session can read tasks")
+	}
 	deadline := time.Now().Add(3 * time.Second)
 	for s.Snapshot().LoggedIn && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)

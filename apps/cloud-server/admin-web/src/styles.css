@@ -82,6 +82,8 @@ tbody tr:hover { background: #fafafa; }
 .device-heading > button { flex-shrink: 0; }
 .device-heading p { color: var(--text-secondary); font-size: 12px; margin: 8px 0; }
 .refresh-time { display: block; color: var(--text-secondary); margin: 4px 0 12px; }
+.refresh-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.refresh-status .refresh-time { margin: 0; }
 .devices code { font-size: 12px; }
 .modal.audit-modal { width: min(900px, 100%); }
 .audit-table { margin-top: 20px; overflow-x: auto; }
