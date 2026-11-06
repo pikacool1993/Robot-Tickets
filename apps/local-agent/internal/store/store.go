@@ -89,3 +89,36 @@ func (s *Store) ReplaceConfig(plain []byte) error {
 	}
 	return tx.Commit()
 }
+
+// SaveLoginPreferences commits the instance-wide authorization protocol and the
+// optional remembered login form together, so a successful login cannot leave
+// half-updated local preferences.
+func (s *Store) SaveLoginPreferences(protocol string, form []byte, remember bool) error {
+	sealedProtocol, err := secure.Protect([]byte(protocol))
+	if err != nil {
+		return err
+	}
+	var sealedForm []byte
+	if remember {
+		sealedForm, err = secure.Protect(form)
+		if err != nil {
+			return err
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("INSERT INTO settings(name,value) VALUES('auth-protocol',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", sealedProtocol); err != nil {
+		return err
+	}
+	if remember {
+		if _, err = tx.Exec("INSERT INTO settings(name,value) VALUES('form',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", sealedForm); err != nil {
+			return err
+		}
+	} else if _, err = tx.Exec("DELETE FROM settings WHERE name='form'"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

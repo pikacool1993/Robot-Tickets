@@ -84,7 +84,7 @@ func TestLoginRememberRestartAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	form := Form{"user", "test-password", "A", true}
+	form := Form{Username: "user", Password: "test-password", ClientNumber: "A", Remember: true, AuthProtocol: "wechat"}
 	if _, err := s.CreateTask(); err == nil {
 		t.Fatal("unauthenticated task creation allowed")
 	}
@@ -94,8 +94,11 @@ func TestLoginRememberRestartAndExpiry(t *testing.T) {
 	if state := s.Snapshot(); !state.LoggedIn || state.AgentName != "测试代理商" {
 		t.Fatal("login state missing")
 	}
+	if state := s.Snapshot(); state.AuthProtocol != "wechat" {
+		t.Fatal("selected authorization protocol missing")
+	}
 	remembered, err := s.Remembered()
-	if err != nil || remembered != form {
+	if err != nil || remembered.Username != form.Username || remembered.Password != form.Password || remembered.ClientNumber != form.ClientNumber || !remembered.Remember || remembered.AuthProtocol != form.AuthProtocol {
 		t.Fatal("remembered form mismatch")
 	}
 	if _, err := s.CreateTask(); err != nil {
@@ -110,17 +113,24 @@ func TestLoginRememberRestartAndExpiry(t *testing.T) {
 	if s.Snapshot().LoggedIn {
 		t.Fatal("session persisted across restart")
 	}
+	if s.Snapshot().AuthProtocol != "wechat" {
+		t.Fatal("authorization protocol did not persist across restart")
+	}
 	if remembered, err := s.Remembered(); err != nil || remembered != form {
 		t.Fatal("remembered form lost")
 	}
 	form.Remember = false
 	form.ClientNumber = "B"
 	form.Username = "another-agent"
+	form.AuthProtocol = "yyb"
 	if err := s.Login(form); err != nil {
 		t.Fatal(err)
 	}
-	if remembered, _ := s.Remembered(); remembered.Remember || remembered.Password != "" {
+	if remembered, _ := s.Remembered(); remembered.Remember || remembered.Password != "" || remembered.AuthProtocol != "yyb" {
 		t.Fatal("unchecked form was not cleared")
+	}
+	if state := s.Snapshot(); state.AuthProtocol != "yyb" {
+		t.Fatal("successful login did not update protocol")
 	}
 	if tasks, err := s.TaskView(); err != nil || len(tasks.Tasks) != 1 || tasks.Tasks[0].ID != 1 {
 		t.Fatal("switching agents lost local tasks", err)

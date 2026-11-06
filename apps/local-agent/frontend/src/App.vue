@@ -3,12 +3,12 @@ import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { backend, type State, type Form } from './bridge'
 import TaskWorkspace from './TaskWorkspace.vue'
 const state = ref<State | null>(null)
-const form = reactive<Form>({ username: '', password: '', client_number: '', remember: false })
+const form = reactive<Form>({ username: '', password: '', client_number: '', remember: false, auth_protocol: '' })
 const error = ref(''); const busy = ref(false); const ready = ref(false); const reveal = ref(false)
 let timer: ReturnType<typeof setInterval> | undefined
 let polling = false
 function message(e: unknown) { return e instanceof Error ? e.message : String(e) }
-async function remembered() { Object.assign(form, { username: '', password: '', client_number: '', remember: false }, await backend().GetRememberedForm()); reveal.value = false }
+async function remembered() { Object.assign(form, { username: '', password: '', client_number: '', remember: false, auth_protocol: '' }, await backend().GetRememberedForm()); reveal.value = false }
 async function refresh() {
   if (polling) return
   polling = true
@@ -42,7 +42,7 @@ onUnmounted(() => { if (timer) clearInterval(timer); form.password = '' })
         <div v-if="state?.notice" class="notice">{{ state.notice }}</div>
         <template v-if="!ready"><h2>正在初始化</h2><p>准备本地配置与运行环境。</p></template>
         <template v-else-if="!state?.configured"><span class="step">首次使用</span><h2>导入通信配置</h2><p>选择管理员提供的 <strong>bootstrap.cfg</strong> 文件，配置完成后即可登录。</p><div class="file-box"><span class="file-icon">CFG</span><strong>客户端通信配置</strong><span>仅接受有效的 Robot 配置文件</span></div><button class="primary full" :disabled="busy" @click="importConfig">{{ busy ? '正在导入…' : '选择 .cfg 配置文件' }}</button><small class="hint">如软件包已附带配置，首次启动会自动导入。</small></template>
-        <template v-else-if="!state.loggedIn"><span class="step">身份验证</span><h2>代理商登录</h2><p>请输入你的账号与客户端编号。</p><form @submit.prevent="login"><label>用户名<input v-model="form.username" autocomplete="off" maxlength="64" required :disabled="busy" placeholder="请输入代理商用户名"/></label><label>密码<div class="password"><input v-model="form.password" :type="reveal ? 'text' : 'password'" autocomplete="off" required :disabled="busy" placeholder="请输入密码"/><button type="button" class="reveal" :aria-label="reveal ? '隐藏密码' : '显示密码'" @click="reveal = !reveal">{{ reveal ? '隐藏' : '显示' }}</button></div></label><label>客户端编号<input v-model="form.client_number" autocomplete="off" maxlength="128" required :disabled="busy" placeholder="请输入全局唯一的编号"/></label><label class="checkbox"><input v-model="form.remember" type="checkbox" :disabled="busy"/>记住登录信息</label><button class="primary full" :disabled="busy">{{ busy ? '正在登录…' : '登录' }}</button></form><small class="hint">每次打开软件均需手动登录。</small><div class="server"><span :title="state.serverURL">{{ state.serverURL }}</span><button class="text" :disabled="busy" @click="importConfig">重新导入配置</button></div></template>
+        <template v-else-if="!state.loggedIn"><span class="step">身份验证</span><h2>代理商登录</h2><p>请输入你的账号与客户端编号，并选择本客户端的授权协议。</p><form @submit.prevent="login"><label>授权协议<span class="protocol-select" :class="{ disabled: busy }"><select v-model="form.auth_protocol" autocomplete="off" required :disabled="busy"><option disabled value="">请选择微信或 YYB</option><option value="wechat">微信协议</option><option value="yyb">YYB 协议</option></select></span></label><label>用户名<input v-model="form.username" autocomplete="off" maxlength="64" required :disabled="busy" placeholder="请输入代理商用户名"/></label><label>密码<div class="password"><input v-model="form.password" :type="reveal ? 'text' : 'password'" autocomplete="off" required :disabled="busy" placeholder="请输入密码"/><button type="button" class="reveal" :aria-label="reveal ? '隐藏密码' : '显示密码'" @click="reveal = !reveal">{{ reveal ? '隐藏' : '显示' }}</button></div></label><label>客户端编号<input v-model="form.client_number" autocomplete="off" maxlength="128" required :disabled="busy" placeholder="请输入全局唯一的编号"/></label><label class="checkbox"><input v-model="form.remember" type="checkbox" :disabled="busy"/>记住登录信息</label><button class="primary full" :disabled="busy">{{ busy ? '正在登录…' : '登录' }}</button></form><small class="hint">每次打开软件均需手动登录。授权协议按客户端保存，所有任务共用。</small><div class="server"><span :title="state.serverURL">{{ state.serverURL }}</span><button class="text" :disabled="busy" @click="importConfig">重新导入配置</button></div></template>
       </section>
     </div><footer>本地配置与登录信息按实例独立保存<span>Robot / Local Agent</span></footer>
   </main>

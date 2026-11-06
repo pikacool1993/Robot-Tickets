@@ -23,6 +23,7 @@ type Form struct {
 	Password     string `json:"password"`
 	ClientNumber string `json:"client_number"`
 	Remember     bool   `json:"remember"`
+	AuthProtocol string `json:"auth_protocol"`
 }
 type State struct {
 	Configured   bool      `json:"configured"`
@@ -34,6 +35,7 @@ type State struct {
 	ExpiresAt    time.Time `json:"expiresAt"`
 	Connection   string    `json:"connection"`
 	Notice       string    `json:"notice"`
+	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
 	mu      sync.Mutex
@@ -81,6 +83,12 @@ func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed
 			if err := s.importFile(path); err != nil {
 				s.state.Notice = err.Error()
 			}
+		}
+	}
+	if protocolData, getErr := db.Get("auth-protocol"); getErr == nil {
+		selected := string(protocolData)
+		if selected == "wechat" || selected == "yyb" {
+			s.state.AuthProtocol = selected
 		}
 	}
 	go s.monitor()
@@ -148,6 +156,9 @@ func (s *Service) Remembered() (Form, error) {
 	if len(data) > 0 && json.Unmarshal(data, &f) != nil {
 		return Form{}, errors.New("已记住的登录信息无效，请重新输入")
 	}
+	if protocol, protocolErr := s.store.Get("auth-protocol"); protocolErr == nil && (string(protocol) == "wechat" || string(protocol) == "yyb") {
+		f.AuthProtocol = string(protocol)
+	}
 	return f, nil
 }
 func (s *Service) Login(f Form) error {
@@ -158,6 +169,9 @@ func (s *Service) Login(f Form) error {
 	}
 	if s.session != nil {
 		return errors.New("当前已登录")
+	}
+	if f.AuthProtocol != "wechat" && f.AuthProtocol != "yyb" {
+		return errors.New("请选择当前客户端使用的微信或 YYB 授权协议")
 	}
 	f.Username = strings.ToLower(strings.TrimSpace(f.Username))
 	f.ClientNumber = strings.TrimSpace(f.ClientNumber)
@@ -170,12 +184,8 @@ func (s *Service) Login(f Form) error {
 	if err != nil {
 		return err
 	}
-	if f.Remember {
-		data, _ := json.Marshal(f)
-		err = s.store.Put("form", data)
-	} else {
-		err = s.store.Delete("form")
-	}
+	data, _ := json.Marshal(f)
+	err = s.store.SaveLoginPreferences(f.AuthProtocol, data, f.Remember)
 	if err != nil {
 		cleanup, cancel := context.WithTimeout(s.ctx, 2*time.Second)
 		defer cancel()
@@ -183,6 +193,7 @@ func (s *Service) Login(f Form) error {
 		return errors.New("无法保存登录偏好，已取消本地登录，请检查文件夹写入权限后重试")
 	}
 	s.session = &session
+	s.state.AuthProtocol = f.AuthProtocol
 	s.state.LoggedIn = true
 	s.state.AgentName = session.Agent.Name
 	s.state.ClientNumber = session.ClientNumber
