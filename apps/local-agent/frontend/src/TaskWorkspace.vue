@@ -21,6 +21,7 @@ const filteredTasks = computed(() => view.value.tasks.filter(task => {
 const clock = (at: string) => new Date(at).toLocaleTimeString('zh-CN', { hour12: false })
 const failure = (e: unknown) => e instanceof Error ? e.message : String(e)
 let alive = true
+let pendingSeatSave = false
 const tip = ref<{ text: string; left: number; top: number } | null>(null)
 function tooltip(event: MouseEvent | FocusEvent, text: string) {
   if (!text || modal.value) return
@@ -45,10 +46,20 @@ function close(discard = false) {
   dialog.value?.close(); modal.value = null; activeID.value = null; saveError.value = ''
 }
 async function saveSeats() {
-  if (saving.value || activeID.value === null) return
+  if (activeID.value === null) return
+  pendingSeatSave = true
+  if (saving.value) return
   saving.value = true; saveError.value = ''
-  const id = activeID.value, mode = draft.value.mode, selected = [...draft.value.selected]
-  try { await backend().SaveTaskSeats(id, mode, selected); await load() } catch (e) { if (alive) saveError.value = failure(e) } finally { saving.value = false }
+  const id = activeID.value
+  try {
+    while (pendingSeatSave && alive) {
+      pendingSeatSave = false
+      const mode = draft.value.mode, selected = [...draft.value.selected]
+      await backend().SaveTaskSeats(id, mode, selected)
+      const task = view.value.tasks.find(t => t.id === id)
+      if (task) { task.mode = mode; task.selected = selected; task.seatValid = selected.length > 0; task.latest = { at: new Date().toISOString(), text: '已保存座位要求' } }
+    }
+  } catch (e) { pendingSeatSave = false; if (alive) saveError.value = failure(e) } finally { saving.value = false }
 }
 function setMode(mode: 'tier' | 'area') {
   if (saving.value || mode === draft.value.mode) return
@@ -107,8 +118,8 @@ async function deleteTask() {
           <div v-if="saveError" class="tw-alert" role="alert">{{ saveError }}<div class="tw-error-actions"><button v-if="modal === 'seat'" @click="saveSeats">重试保存</button><button @click="close(true)">放弃未保存更改</button></div></div>
           <template v-if="modal === 'seat'">
             <div v-if="view.configError" class="tw-alert">{{ view.configError }}</div>
-            <div class="tw-switch" role="group" aria-label="座位选择模式"><button :aria-pressed="draft.mode === 'tier'" :disabled="saving || !!view.configError" @click="setMode('tier')">指定票类</button><button :aria-pressed="draft.mode === 'area'" :disabled="saving || !!view.configError" @click="setMode('area')">固定区域</button></div>
-            <fieldset :disabled="saving || !!view.configError" class="tw-options" aria-label="座位选项">
+            <div class="tw-switch" role="group" aria-label="座位选择模式"><button :aria-pressed="draft.mode === 'tier'" :disabled="!!view.configError" @click="setMode('tier')">指定票类</button><button :aria-pressed="draft.mode === 'area'" :disabled="!!view.configError" @click="setMode('area')">固定区域</button></div>
+            <fieldset :disabled="!!view.configError" class="tw-options" aria-label="座位选项">
               <template v-if="draft.mode === 'tier'"><div class="tw-tier-options"><label v-for="tier in view.catalog.tiers" :key="tier.tier" class="tw-choice" :class="{ checked: draft.selected.includes(tier.tier) }"><input type="checkbox" :checked="draft.selected.includes(tier.tier)" @change="toggle(tier.tier, ($event.target as HTMLInputElement).checked)"/><span>{{ tier.tier }}<small>¥{{ tier.price }}</small></span></label></div><p class="tw-note">支持跨档组合，选择后自动保存。</p><p v-if="!view.catalog.tiers.length" class="tw-note">暂无可选票类。</p></template>
               <template v-else><section v-for="group in groups" :key="group.name" class="tw-area-group"><label class="tw-group-heading"><input type="checkbox" :disabled="!group.areas.length" :checked="group.areas.length > 0 && group.areas.every(a => draft.selected.includes(a.code))" :indeterminate="group.areas.some(a => draft.selected.includes(a.code)) && !group.areas.every(a => draft.selected.includes(a.code))" @change="toggleGroup(group.areas.map(a => a.code), ($event.target as HTMLInputElement).checked)"/><span>{{ group.name }}</span><small>全选 · {{ group.areas.length }} 个看台</small></label><div class="tw-area-options"><label v-for="area in group.areas" :key="area.code" class="tw-choice tw-area" :class="{ checked: draft.selected.includes(area.code) }" :title="`${area.code} · ${area.tier}类 ¥${area.price}${area.specialArea ? ' · ' + area.specialArea : ''}`"><input type="checkbox" :aria-label="`${area.code}，${area.tier}类，${area.price}元，${area.specialArea}`" :checked="draft.selected.includes(area.code)" @change="toggle(area.code, ($event.target as HTMLInputElement).checked)"/><span class="tw-area-copy"><span class="tw-area-top"><span class="tw-area-code">{{ area.code }}</span><span v-if="area.specialArea" class="tw-special">{{ area.specialArea }}</span></span><small>{{ area.tier }} · ¥{{ area.price }}</small></span></label></div></section></template>
             </fieldset>

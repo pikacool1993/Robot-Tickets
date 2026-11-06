@@ -14,3 +14,16 @@ apps/local-agent/build/windows/*.syso
 apps/local-agent/*.syso
 apps/local-agent/data/
 apps/local-agent/internal/trust/assets/local.json
+
+# Protocol service source trees: generated binaries and local runtime data.
+protocol-services/wechat/.idea/
+protocol-services/wechat/.DS_Store
+protocol-services/wechat/main.exe
+protocol-services/wechat/wechat_win.exe
+protocol-services/wechat/staydd
+protocol-services/wechat/linuxStaydd
+protocol-services/yyb/yyb-go.exe
+protocol-services/yyb/resource/db/
+protocol-services/yyb/resource/avatars/
+protocol-services/yyb/resource/qr/
+protocol-services/yyb/resource/static/
