@@ -21,7 +21,7 @@
 
 | 服务 | 默认地址 | 职责 | 客户端 |
 |---|---|---|---|
-| YYB Go | `http://127.0.0.1:8063` | 扫码登录、账号、小程序 | `YybClient` |
+| YYB Go | `http://127.0.0.1:8088` | 扫码登录、账号、小程序 | `YybClient` |
 | WeChat `wechat_874` | `http://127.0.0.1:8062` | 微信登录、心跳、小程序 | `WeChatClient` |
 | CDN3 | `https://fccdn1.k4n.cc/` | 蓉城登录、票区、账号和订单 | `RongChengCdn1Client` |
 | CDN5 | `https://fccdn5.k4n.cc/` | 蓉城下单 | `RongChengCdn5Client` |

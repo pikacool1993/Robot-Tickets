@@ -3,6 +3,7 @@ package protocol
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -14,9 +15,11 @@ import (
 )
 
 type tcpProxy struct {
-	Scheme string
-	Host   string
-	Port   string
+	Scheme   string
+	Host     string
+	Port     string
+	Username string
+	Password string
 }
 
 func parseTCPProxy(value string) (*tcpProxy, error) {
@@ -27,13 +30,18 @@ func parseTCPProxy(value string) (*tcpProxy, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.Scheme != "socks5" && u.Scheme != "http-connect" {
-		return nil, fmt.Errorf("tcp_proxy must use socks5:// or http-connect://")
+	if u.Scheme != "socks5" && u.Scheme != "http-connect" && u.Scheme != "http" {
+		return nil, fmt.Errorf("tcp_proxy must use socks5://, http://, or http-connect://")
 	}
 	if u.Hostname() == "" || u.Port() == "" {
 		return nil, fmt.Errorf("tcp_proxy must include host and port")
 	}
-	return &tcpProxy{Scheme: u.Scheme, Host: u.Hostname(), Port: u.Port()}, nil
+	username, password := "", ""
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+	return &tcpProxy{Scheme: u.Scheme, Host: u.Hostname(), Port: u.Port(), Username: username, Password: password}, nil
 }
 
 func dialTCP(ctx context.Context, host string, port int, timeout time.Duration, proxyValue string, fallbackDirect bool) (net.Conn, error) {
@@ -74,7 +82,7 @@ func dialViaProxy(ctx context.Context, proxy *tcpProxy, targetHost string, targe
 	if proxy.Scheme == "socks5" {
 		err = socks5Connect(conn, targetHost, targetPort)
 	} else {
-		err = httpConnect(conn, targetHost, targetPort)
+		err = httpConnect(conn, targetHost, targetPort, proxy.Username, proxy.Password)
 	}
 	if err != nil {
 		_ = conn.Close()
@@ -132,10 +140,15 @@ func socks5Connect(conn net.Conn, targetHost string, targetPort int) error {
 	}
 }
 
-func httpConnect(conn net.Conn, targetHost string, targetPort int) error {
+func httpConnect(conn net.Conn, targetHost string, targetPort int, username string, password string) error {
 	target := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
-	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", target, target)
-	if _, err := conn.Write([]byte(req)); err != nil {
+	request := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n", target, target)
+	if username != "" {
+		credentials := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+		request += "Proxy-Authorization: Basic " + credentials + "\r\n"
+	}
+	request += "\r\n"
+	if _, err := conn.Write([]byte(request)); err != nil {
 		return err
 	}
 	br := bufio.NewReader(conn)

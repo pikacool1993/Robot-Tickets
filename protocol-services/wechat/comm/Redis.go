@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"wechatdll/Algorithm"
@@ -308,6 +309,24 @@ func RedisInitialize() *redis.Client {
 		Password: beego.AppConfig.String("redispass"), // redis密码，没有则留空
 		DB:       dbNum,                               // 默认数据库，默认是0
 	})
+	if instance := os.Getenv("ROBOT_PROTOCOL_INSTANCE"); instance != "" {
+		prefix := "robot:" + instance + ":"
+		RedisClient.WrapProcess(func(next func(redis.Cmder) error) func(redis.Cmder) error {
+			return func(cmd redis.Cmder) error {
+				args := cmd.Args()
+				switch cmd.Name() {
+				case "get", "set", "exists", "del", "keys", "hget", "hset", "hgetall":
+					if len(args) > 1 {
+						key, ok := args[1].(string)
+						if ok && !strings.HasPrefix(key, prefix) {
+							args[1] = prefix + key
+						}
+					}
+				}
+				return next(cmd)
+			}
+		})
+	}
 
 	return RedisClient
 }

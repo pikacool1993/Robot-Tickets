@@ -18,6 +18,7 @@ type SendPostData struct {
 }
 
 func MmtlsInitialize(Proxy models.ProxyInfo, domain string) (*Mmtls.HttpClientModel, *Mmtls.MmtlsClient, error) {
+	Proxy = managedProxy(Proxy)
 	//生成mmtls公私钥
 	V1PrivKey, V1pubKey := Algorithm.GetECDH415Key()
 	V2PrivKey, V2pubKey := Algorithm.GetECDH415Key()
@@ -41,6 +42,7 @@ func MmtlsInitialize(Proxy models.ProxyInfo, domain string) (*Mmtls.HttpClientMo
 }
 
 func SendRequest(SENP SendPostData, MmtlsClient *Mmtls.MmtlsClient) (protobufdata, Cookie []byte, errtype int64, err error) {
+	SENP.Proxy = managedProxy(SENP.Proxy)
 	//logInfoS, _ := json.Marshal(SENP)
 	//log.Infof("http发送前pb组包(%d): [%x]", len(SENP.PackData.Reqdata), SENP.PackData.Reqdata)
 	senddata := Algorithm.Pack(SENP.PackData.Reqdata, SENP.PackData.Cgi, SENP.PackData.Uin, SENP.PackData.Sessionkey, SENP.PackData.Cookie, SENP.PackData.Clientsessionkey, SENP.PackData.Loginecdhkey, SENP.PackData.EncryptType, SENP.PackData.UseCompress)

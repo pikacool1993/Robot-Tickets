@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
 	"robot/apps/local-agent/internal/cloud"
+	"robot/apps/local-agent/internal/protocols"
 	"robot/apps/local-agent/internal/store"
 	"robot/apps/local-agent/internal/tasks"
 	"strings"
@@ -19,11 +20,14 @@ import (
 )
 
 type Form struct {
-	Username     string `json:"username"`
-	Password     string `json:"password"`
-	ClientNumber string `json:"client_number"`
-	Remember     bool   `json:"remember"`
-	AuthProtocol string `json:"auth_protocol"`
+	Username       string `json:"username"`
+	Password       string `json:"password"`
+	ClientNumber   string `json:"client_number"`
+	Remember       bool   `json:"remember"`
+	AuthProtocol   string `json:"auth_protocol"`
+	Proxy          string `json:"proxy"`
+	ConfirmRestart bool   `json:"confirmRestart"`
+	ResetTaskIDs   bool   `json:"resetTaskIDs"`
 }
 type State struct {
 	Configured   bool      `json:"configured"`
@@ -38,20 +42,21 @@ type State struct {
 	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
-	mu      sync.Mutex
-	store   *store.Store
-	root    string
-	enc     map[string][]byte
-	sign    map[string]ed25519.PublicKey
-	config  *protocol.Config
-	client  *cloud.Client
-	session *cloud.Session
-	state   State
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	log     *slog.Logger
-	tasks   *tasks.Service
+	mu        sync.Mutex
+	store     *store.Store
+	root      string
+	enc       map[string][]byte
+	sign      map[string]ed25519.PublicKey
+	config    *protocol.Config
+	client    *cloud.Client
+	session   *cloud.Session
+	state     State
+	ctx       context.Context
+	cancel    context.CancelFunc
+	done      chan struct{}
+	log       *slog.Logger
+	tasks     *tasks.Service
+	protocols *protocols.Manager
 }
 
 func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed25519.PublicKey, logger *slog.Logger) (*Service, error) {
@@ -178,12 +183,22 @@ func (s *Service) Login(f Form) error {
 	if f.Username == "" || f.Password == "" || f.ClientNumber == "" || len(f.ClientNumber) > 128 {
 		return errors.New("请输入用户名、密码和有效的客户端编号（最多 128 字节）")
 	}
+	if s.protocols != nil {
+		ctx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
+		err := s.protocols.Ensure(ctx, f.AuthProtocol, f.Proxy, f.ConfirmRestart)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
 	ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 	defer cancel()
 	session, err := s.client.Login(ctx, cloud.LoginInput{Username: f.Username, Password: f.Password, ClientNumber: f.ClientNumber, InstanceID: s.state.InstanceID})
 	if err != nil {
 		return err
 	}
+	f.Proxy = ""
+	f.ConfirmRestart = false
 	data, _ := json.Marshal(f)
 	err = s.store.SaveLoginPreferences(f.AuthProtocol, data, f.Remember)
 	if err != nil {
@@ -191,6 +206,14 @@ func (s *Service) Login(f Form) error {
 		defer cancel()
 		_ = s.client.Call(cleanup, "POST", "/auth/logout", session.Token, struct{}{}, nil)
 		return errors.New("无法保存登录偏好，已取消本地登录，请检查文件夹写入权限后重试")
+	}
+	if f.ResetTaskIDs {
+		if err := s.tasks.ResetIDs(); err != nil {
+			cleanup, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+			defer cancel()
+			_ = s.client.Call(cleanup, "POST", "/auth/logout", session.Token, struct{}{}, nil)
+			return err
+		}
 	}
 	s.session = &session
 	s.state.AuthProtocol = f.AuthProtocol
@@ -200,10 +223,16 @@ func (s *Service) Login(f Form) error {
 	s.state.ExpiresAt = session.ExpiresAt
 	s.state.Connection = "已连接"
 	s.state.Notice = ""
+	if s.protocols != nil {
+		s.protocols.Activate(f.AuthProtocol)
+	}
 	s.log.Info("agent login succeeded")
 	return nil
 }
 func (s *Service) clearSession(notice string) {
+	if s.protocols != nil {
+		s.protocols.Deactivate()
+	}
 	s.session = nil
 	s.state.LoggedIn = false
 	s.state.AgentName = ""
@@ -276,6 +305,9 @@ func (s *Service) Close() {
 		_ = s.client.Call(ctx, "POST", "/auth/logout", s.session.Token, struct{}{}, nil)
 	}
 	s.clearSession("")
+	if s.protocols != nil {
+		s.protocols.Close()
+	}
 	if s.client != nil {
 		s.client.Close()
 	}

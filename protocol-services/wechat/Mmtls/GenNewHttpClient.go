@@ -27,7 +27,7 @@ func GenNewHttpClient2(Data *MmtlsClient, domain string, P models.ProxyInfo) (ht
 	if P.ProxyIp != "" && P.ProxyIp != "string" {
 		var ProxyUser *proxy.Auth
 		//设定账号和用户名
-		if P.ProxyUser != "" && P.ProxyUser != "string" && P.ProxyPassword != "" && P.ProxyPassword != "string" {
+		if P.ProxyUser != "" && P.ProxyUser != "string" && P.ProxyPassword != "string" {
 			ProxyUser = &proxy.Auth{
 				User:     P.ProxyUser,
 				Password: P.ProxyPassword,

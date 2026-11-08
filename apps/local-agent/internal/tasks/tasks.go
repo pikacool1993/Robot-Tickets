@@ -38,12 +38,17 @@ type Log struct {
 	Text string `json:"text"`
 }
 type Task struct {
-	ID          int64    `json:"id"`
-	Mode        string   `json:"mode"`
-	Selected    []string `json:"selected"`
-	SeatValid   bool     `json:"seatValid"`
-	Fingerprint string   `json:"fingerprint"`
-	Latest      *Log     `json:"latest"`
+	WechatNickname string   `json:"wechatNickname,omitempty"`
+	ProtocolAvatar string   `json:"protocolAvatar,omitempty"`
+	ProtocolStatus string   `json:"protocolStatus,omitempty"`
+	AuthProtocol   string   `json:"authProtocol,omitempty"`
+	Paused         bool     `json:"paused,omitempty"`
+	ID             int64    `json:"id"`
+	Mode           string   `json:"mode"`
+	Selected       []string `json:"selected"`
+	SeatValid      bool     `json:"seatValid"`
+	Fingerprint    string   `json:"fingerprint"`
+	Latest         *Log     `json:"latest"`
 }
 type document struct {
 	NextID      int64  `json:"nextID"`
@@ -199,6 +204,12 @@ func (s *Service) Create() (Task, error) {
 		return Task{}, err
 	}
 	return t, nil
+}
+func (s *Service) ResetIDs() error {
+	next := s.clone()
+	next.Tasks = []Task{}
+	next.NextID = 1
+	return s.commit(next)
 }
 func (s *Service) SaveSeats(id int64, mode string, selected []string) error {
 	if s.configError != "" {

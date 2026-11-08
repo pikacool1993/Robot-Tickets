@@ -111,6 +111,20 @@ func (a *App) Handler() http.Handler {
 
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
+	if token := os.Getenv("ROBOT_PROTOCOL_TOKEN"); token != "" {
+		// Preserve the original local web console and its API routes. Only the
+		// client's internal control routes require the managed process token.
+		router.Use(func(c *gin.Context) {
+			if strings.HasPrefix(c.Request.URL.Path, "/robot/") && c.GetHeader("Authorization") != "Bearer "+token {
+				c.AbortWithStatus(http.StatusUnauthorized)
+				return
+			}
+			c.Next()
+		})
+	}
+	router.GET("/robot/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"instance": os.Getenv("ROBOT_PROTOCOL_INSTANCE"), "service": "yyb", "pid": os.Getpid()})
+	})
 
 	router.Any("/", gin.WrapF(a.handleIndex))
 	router.Any("/scan", gin.WrapF(a.handleScan))
@@ -571,8 +585,13 @@ func (a *App) refreshLiveness(ctx context.Context, acc *store.WechatAccount) str
 	creds := protocol.CredentialsFromMap(acc.Credentials)
 	result, err := a.qr.RefreshLoginBuffer(ctx, creds)
 	if err != nil {
-		_ = a.db.SetAccountStatus(ctx, acc.ID, "expired")
-		return "expired"
+		status := "unknown"
+		var rejected *protocol.CredentialRejection
+		if errors.As(err, &rejected) {
+			status = "expired"
+		}
+		_ = a.db.SetAccountStatus(ctx, acc.ID, status)
+		return status
 	}
 	_ = a.db.SetAccountCredential(ctx, acc.ID, result.LoginBuffer, result.Credentials.ToMap())
 	_ = a.db.SetAccountStatus(ctx, acc.ID, "alive")

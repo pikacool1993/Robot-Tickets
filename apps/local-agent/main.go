@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"robot/apps/local-agent/internal/agent"
+	"robot/apps/local-agent/internal/protocols"
 	"robot/apps/local-agent/internal/store"
 	"robot/apps/local-agent/internal/tasks"
 	"robot/apps/local-agent/internal/trust"
@@ -53,7 +54,18 @@ func (a *App) CreateTask() (tasks.Task, error)        { return a.service.CreateT
 func (a *App) SaveTaskSeats(id int64, mode string, selected []string) error {
 	return a.service.SaveTaskSeats(id, mode, selected)
 }
-func (a *App) DeleteTask(id int64) error { return a.service.DeleteTask(id) }
+func (a *App) DeleteTask(id int64) error                    { return a.service.DeleteTask(id) }
+func (a *App) GetProtocolProxy(kind string) (string, error) { return a.service.ProtocolProxy(kind) }
+func (a *App) GetProtocolStatus() (protocols.Status, error) { return a.service.ProtocolStatus() }
+func (a *App) ControlProtocol(action string, confirmed bool) error {
+	return a.service.ControlProtocol(action, confirmed)
+}
+func (a *App) BeginAuthorization(id int64) (protocols.Attempt, error) {
+	return a.service.BeginAuthorization(id)
+}
+func (a *App) GetAuthorization(id int64) (protocols.Attempt, error) {
+	return a.service.Authorization(id)
+}
 func (a *App) ImportConfig() error {
 	path, err := wruntime.OpenFileDialog(a.ctx, wruntime.OpenDialogOptions{Title: "选择客户端通信配置", Filters: []wruntime.FileFilter{{DisplayName: "Robot 配置文件 (*.cfg)", Pattern: "*.cfg"}}})
 	if err != nil {
@@ -78,7 +90,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	a.mu.Unlock()
 	// Return to the Windows message loop before opening a native dialog.
 	go func() {
-		answer, err := wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{Type: wruntime.QuestionDialog, Title: "退出 Robot", Message: "确定退出程序吗？退出后将结束本次登录，程序不会在后台运行。", Buttons: []string{"Yes", "No"}, DefaultButton: "No", CancelButton: "No"})
+		answer, err := wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{Type: wruntime.QuestionDialog, Title: "退出 Robot", Message: "确定退出程序吗？客户端登录、扫码等待和账号维护将结束；已启动的微信或 YYB 协议服务继续在后台运行。", Buttons: []string{"Yes", "No"}, DefaultButton: "No", CancelButton: "No"})
 		a.mu.Lock()
 		a.closing = false
 		a.allowClose = err == nil && answer == "Yes"
@@ -138,9 +150,12 @@ func main() {
 		fatal("客户端初始化失败")
 	}
 	defer service.Close()
+	if err := service.EnableProtocols(); err != nil {
+		fatal("协议服务配置无法读取，请检查本地数据")
+	}
 	app := &App{service: service}
 	lockID := fmt.Sprintf("robot-agent-%x", sha256.Sum256([]byte(strings.ToLower(root))))
-	err = wails.Run(&options.App{Title: "Robot · 本地客户端", Width: 1040, Height: 740, MinWidth: 360, MinHeight: 560, BackgroundColour: options.NewRGB(23, 30, 41), AssetServer: &assetserver.Options{Assets: assets}, OnStartup: app.startup, OnBeforeClose: app.beforeClose, Bind: []interface{}{app}, SingleInstanceLock: &options.SingleInstanceLock{UniqueId: lockID, OnSecondInstanceLaunch: func(_ options.SecondInstanceData) { app.focus() }}, Windows: &windows.Options{WebviewUserDataPath: filepath.Join(dataDir, "webview"), Theme: windows.Dark}})
+	err = wails.Run(&options.App{Title: "Robot · 本地客户端", Width: 1280, Height: 860, MinWidth: 360, MinHeight: 560, BackgroundColour: options.NewRGB(23, 30, 41), AssetServer: &assetserver.Options{Assets: assets}, OnStartup: app.startup, OnBeforeClose: app.beforeClose, Bind: []interface{}{app}, SingleInstanceLock: &options.SingleInstanceLock{UniqueId: lockID, OnSecondInstanceLaunch: func(_ options.SecondInstanceData) { app.focus() }}, Windows: &windows.Options{WebviewUserDataPath: filepath.Join(dataDir, "webview"), Theme: windows.Dark}})
 	if err != nil {
 		logger.Error("desktop runtime failed")
 		fatal("桌面窗口启动失败，请检查 WebView2 是否正确安装")

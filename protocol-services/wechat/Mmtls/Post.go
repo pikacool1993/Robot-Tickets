@@ -2,9 +2,12 @@ package Mmtls
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 	"wechatdll/models"
 
@@ -24,7 +27,7 @@ func (httpclient *HttpClientModel) POST(cgiurl string, data []byte, host string,
 	if P.ProxyIp != "" && P.ProxyIp != "string" {
 		var ProxyUser *proxy.Auth
 		//设定账号和用户名
-		if P.ProxyUser != "" && P.ProxyUser != "string" && P.ProxyPassword != "" && P.ProxyPassword != "string" {
+		if P.ProxyUser != "" && P.ProxyUser != "string" && P.ProxyPassword != "string" {
 			ProxyUser = &proxy.Auth{
 				User:     P.ProxyUser,
 				Password: P.ProxyPassword,
@@ -78,6 +81,17 @@ func (httpclient *HttpClientModel) POST(cgiurl string, data []byte, host string,
 }
 
 func Socks5Client(addr string, auth *proxy.Auth) (client *http.Client, err error) {
+	if strings.HasPrefix(addr, "http://") {
+		u, e := url.Parse(addr)
+		if e != nil {
+			return nil, fmt.Errorf("invalid HTTP proxy")
+		}
+		if auth != nil {
+			u.User = url.UserPassword(auth.User, auth.Password)
+		}
+		return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(u)}, Timeout: 15 * time.Second}, nil
+	}
+	addr = strings.TrimPrefix(addr, "socks5://")
 	dialer, err := proxy.SOCKS5("tcp", addr,
 		auth,
 		&net.Dialer{

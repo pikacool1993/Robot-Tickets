@@ -13,6 +13,13 @@ import (
 	"time"
 )
 
+// CredentialRejection distinguishes a rejected renewal from transport/proxy failures.
+type CredentialRejection struct{ Code int }
+
+func (e *CredentialRejection) Error() string {
+	return fmt.Sprintf("credential renewal rejected (code %d)", e.Code)
+}
+
 const (
 	yybHost         = "https://yybadaccess.3g.qq.com"
 	loginBufferURL  = yybHost + "/pc_yyb_auth/pcyyb_get_wx_login_buffer_auth"
@@ -117,7 +124,7 @@ func (c *LoginBufferClient) FetchLoginBuffer(ctx context.Context, creds LoginBuf
 
 func (c *LoginBufferClient) RefreshCredentials(ctx context.Context, creds LoginBufferCredentials) (LoginBufferCredentials, error) {
 	if creds.RefreshToken == "" {
-		return LoginBufferCredentials{}, fmt.Errorf("missing refresh token")
+		return LoginBufferCredentials{}, &CredentialRejection{Code: -1}
 	}
 	body, err := json.Marshal(refreshTokenRequest{UserInfo: refreshTokenUserInfo{
 		OpenID:       creds.OpenID,
@@ -140,7 +147,7 @@ func (c *LoginBufferClient) RefreshCredentials(ctx context.Context, creds LoginB
 		return LoginBufferCredentials{}, err
 	}
 	if intFromAny(data["code"]) != 0 {
-		return LoginBufferCredentials{}, fmt.Errorf("refresh failed: code=%v msg=%v", data["code"], data["msg"])
+		return LoginBufferCredentials{}, &CredentialRejection{Code: intFromAny(data["code"])}
 	}
 	info, _ := data["user_info"].(map[string]any)
 	expiresIn := defaultInt64(int64FromMap(info, "expires_in"), 7200)

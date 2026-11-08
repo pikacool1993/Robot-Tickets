@@ -17,11 +17,14 @@ import (
 
 func main() {
 	host := flag.String("host", "127.0.0.1", "listen host")
-	port := flag.Int("port", 8063, "listen port")
+	port := flag.Int("port", 8088, "listen port")
 	resourceRoot := flag.String("resource-root", filepath.Join(".", "resource"), "runtime resource directory")
 	dbFilename := flag.String("db", httpapi.DefaultDBFilename, "SQLite database filename under resource/db")
-	tcpProxy := flag.String("tcp-proxy", "", "optional TCP proxy: socks5://host:port or http-connect://host:port")
+	tcpProxy := flag.String("tcp-proxy", "", "optional TCP proxy: socks5://host:port or http://[user:password@]host:port")
 	flag.Parse()
+	if value := os.Getenv("ROBOT_PROTOCOL_PROXY"); value != "" {
+		*tcpProxy = value
+	}
 
 	cfg := httpapi.Config{
 		ResourceRoot:   *resourceRoot,

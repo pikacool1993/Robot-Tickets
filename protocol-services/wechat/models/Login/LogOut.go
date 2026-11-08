@@ -88,6 +88,12 @@ func LogOut(Wxid string) models.ResponseResult {
 		}
 	}
 
+	if Response.GetBaseResponse().GetRet() != 0 {
+		return models.ResponseResult{Code: -8, Success: false, Message: "退出账号未成功", Data: nil}
+	}
+	_ = comm.DelLoginata("PERM1:" + Wxid)
+	_ = comm.DelLoginata("TEMP1:" + Wxid)
+	_ = comm.DelLoginata(Wxid)
 	return models.ResponseResult{
 		Code:    0,
 		Success: true,

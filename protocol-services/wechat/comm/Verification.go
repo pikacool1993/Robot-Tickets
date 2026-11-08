@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -91,7 +92,11 @@ func (p *TempProxy) Start() error {
 
 		var listener net.Listener
 		for port := startPort; port <= startPort+50; port++ {
-			addr := fmt.Sprintf("0.0.0.0:%d", port)
+			host := "0.0.0.0"
+			if os.Getenv("ROBOT_PROTOCOL_MANAGED") == "1" {
+				host = "127.0.0.1"
+			}
+			addr := fmt.Sprintf("%s:%d", host, port)
 			l, e := net.Listen("tcp", addr)
 			if e == nil {
 				listener = l
