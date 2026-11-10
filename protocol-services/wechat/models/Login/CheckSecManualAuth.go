@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"wechatdll/Algorithm"
+	"wechatdll/Cilent/mm"
 	"wechatdll/comm"
 	"wechatdll/models"
 )
@@ -22,13 +23,13 @@ func CheckSecManualAuth(Data *comm.LoginData, ShortHost string) models.ResponseR
 	if Data.Wxid != "" {
 		Datas, err := comm.GetLoginata(Data.Wxid, nil)
 		if err != nil || Datas == nil || Datas.Uuid == "" {
-		}else{
-			Data.DeviceInfo=Datas.DeviceInfo
-			Data.RomModel=Datas.RomModel
-			Data.OsVersion=Datas.OsVersion
-			Data.ClientVersion=Datas.ClientVersion
-			Data.DeviceType=Datas.DeviceType
-			Data.DeviceToken=Datas.DeviceToken
+		} else {
+			Data.DeviceInfo = Datas.DeviceInfo
+			Data.RomModel = Datas.RomModel
+			Data.OsVersion = Datas.OsVersion
+			Data.ClientVersion = Datas.ClientVersion
+			Data.DeviceType = Datas.DeviceType
+			Data.DeviceToken = Datas.DeviceToken
 		}
 	}
 	jsonData, err := json.Marshal(Data)
@@ -87,7 +88,10 @@ func CheckSecManualAuth(Data *comm.LoginData, ShortHost string) models.ResponseR
 			Code:    0,
 			Success: true,
 			Message: "登录成功",
-			Data:    &loginRes,
+			Data: struct {
+				*mm.UnifyAuthResponse
+				HeadImgUrl string `json:"headImgUrl,omitempty"`
+			}{&loginRes, Data.HeadUrl},
 		}
 	}
 

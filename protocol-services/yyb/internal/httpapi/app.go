@@ -41,8 +41,19 @@ type App struct {
 	qr        *qr.Client
 
 	mu         sync.Mutex
-	qrSessions map[string]*qr.Session
+	qrSessions map[string]*qrEntry
 }
+
+// Serialize poll/confirm for each session and retain only public account data
+// after confirmation. Retries do not repeat upstream login or account writes.
+type qrEntry struct {
+	mu             sync.Mutex
+	session        *qr.Session
+	confirmed      *store.AccountPublic
+	confirmedUntil time.Time
+}
+
+const confirmationRetention = 5 * time.Minute
 
 var swaggerDocsHandler = httpSwagger.Handler(
 	httpSwagger.URL("/openapi.json"),
@@ -93,7 +104,7 @@ func NewApp(cfg Config) (*App, error) {
 		db:         db,
 		pool:       pool,
 		qr:         qr.NewClient(cfg.RequestTimeout),
-		qrSessions: map[string]*qr.Session{},
+		qrSessions: map[string]*qrEntry{},
 	}, nil
 }
 
@@ -211,7 +222,7 @@ func (a *App) handleQRRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	a.qrSessions[img.Session.ID] = img.Session
+	a.qrSessions[img.Session.ID] = &qrEntry{session: img.Session}
 	keep := make(map[string]bool, len(a.qrSessions))
 	for sid := range a.qrSessions {
 		keep[sid] = true
@@ -263,7 +274,17 @@ func (a *App) handleQR(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "qr session not found")
 			return
 		}
-		result, err := a.qr.PollQRCode(r.Context(), sess)
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		if sess.confirmed != nil {
+			if !time.Now().Before(sess.confirmedUntil) {
+				writeError(w, http.StatusNotFound, "qr session not found")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "confirmed"})
+			return
+		}
+		result, err := a.qr.PollQRCode(r.Context(), sess.session)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
@@ -282,7 +303,17 @@ func (a *App) handleQR(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "qr session not found")
 			return
 		}
-		result, err := a.qr.GetLoginBuffer(r.Context(), sess)
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		if sess.confirmed != nil {
+			if !time.Now().Before(sess.confirmedUntil) {
+				writeError(w, http.StatusNotFound, "qr session not found")
+				return
+			}
+			writeJSON(w, http.StatusOK, sess.confirmed)
+			return
+		}
+		result, err := a.qr.GetLoginBuffer(r.Context(), sess.session)
 		if err != nil {
 			writeError(w, http.StatusConflict, "buffer not ready: "+err.Error())
 			return
@@ -296,8 +327,12 @@ func (a *App) handleQR(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		a.dropQRSession(sessionID)
-		writeJSON(w, http.StatusOK, acc.Public())
+		public := acc.Public()
+		sess.confirmed = &public
+		sess.confirmedUntil = time.Now().Add(confirmationRetention)
+		sess.session = nil // Release cookies and credentials; retries need only the result.
+		_ = os.Remove(a.resources.qrPath(sessionID))
+		writeJSON(w, http.StatusOK, public)
 	default:
 		writeError(w, http.StatusNotFound, "qr session not found")
 	}
@@ -715,7 +750,7 @@ func looksLikeImage(data []byte) bool {
 	return false
 }
 
-func (a *App) getQRSession(id string) *qr.Session {
+func (a *App) getQRSession(id string) *qrEntry {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.qrSessions[id]
@@ -730,16 +765,26 @@ func (a *App) dropQRSession(id string) {
 
 func (a *App) pruneQR() {
 	a.mu.Lock()
-	var drop []string
-	for sid, sess := range a.qrSessions {
-		if sess.Age() > a.cfg.QRSessionTTL {
-			drop = append(drop, sid)
-		}
-	}
-	for _, sid := range drop {
-		delete(a.qrSessions, sid)
+	entries := make(map[string]*qrEntry, len(a.qrSessions))
+	for id, entry := range a.qrSessions {
+		entries[id] = entry
 	}
 	a.mu.Unlock()
+	var drop []string
+	for sid, entry := range entries {
+		entry.mu.Lock()
+		expired := entry.confirmed != nil && !time.Now().Before(entry.confirmedUntil)
+		if entry.confirmed == nil {
+			expired = entry.session.Age() > a.cfg.QRSessionTTL
+		}
+		if expired {
+			a.mu.Lock()
+			delete(a.qrSessions, sid)
+			a.mu.Unlock()
+			drop = append(drop, sid)
+		}
+		entry.mu.Unlock()
+	}
 	for _, sid := range drop {
 		_ = os.Remove(a.resources.qrPath(sid))
 	}
