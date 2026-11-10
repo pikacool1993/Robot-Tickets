@@ -2,6 +2,7 @@ package protocols
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 )
@@ -9,6 +10,22 @@ import (
 type wechatAdapter struct{ *adapter }
 
 var _ Protocol = (*wechatAdapter)(nil)
+var _ AccountProfileReader = (*wechatAdapter)(nil)
+var _ AutoHeartbeatController = (*wechatAdapter)(nil)
+
+func (a *wechatAdapter) GetAccountProfile(ctx context.Context, acc Account) (json.RawMessage, error) {
+	var data json.RawMessage
+	err := a.call(ctx, "POST", "/api/User/GetContractProfile?wxid="+url.QueryEscape(acc.Ref), nil, &data)
+	return data, err
+}
+
+func (a *wechatAdapter) SetAutoHeartbeat(ctx context.Context, acc Account, enabled bool) error {
+	path := "/api/Login/CloseAutoHeartBeat?wxid="
+	if enabled {
+		path = "/api/Login/AutoHeartBeat?wxid="
+	}
+	return a.call(ctx, "POST", path+url.QueryEscape(acc.Ref), nil, nil)
+}
 
 func (a *wechatAdapter) Begin(ctx context.Context) (Scan, error) {
 	p := map[string]string{"ProxyIp": "", "ProxyUser": "", "ProxyPassword": ""}
@@ -32,6 +49,7 @@ func (a *wechatAdapter) Poll(ctx context.Context, id string) (Scan, error) {
 	var d struct {
 		Status       int
 		NickName     string
+		HeadImgUrl   string
 		AcctSectResp struct{ UserName, NickName string }
 	}
 	err := a.call(ctx, "POST", "/api/Login/LoginCheckQR?uuid="+url.QueryEscape(id), nil, &d)
@@ -43,9 +61,10 @@ func (a *wechatAdapter) Poll(ctx context.Context, id string) (Scan, error) {
 	if err != nil {
 		return s, err
 	}
+	s.Avatar = d.HeadImgUrl
 	if d.AcctSectResp.UserName != "" {
 		s.Status = "confirmed"
-		s.Account = &Account{Ref: d.AcctSectResp.UserName, Nickname: d.AcctSectResp.NickName}
+		s.Account = &Account{Ref: d.AcctSectResp.UserName, Nickname: d.AcctSectResp.NickName, Avatar: d.HeadImgUrl}
 	} else {
 		switch d.Status {
 		case 1:

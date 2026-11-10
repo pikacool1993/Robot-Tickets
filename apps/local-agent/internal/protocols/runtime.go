@@ -147,6 +147,14 @@ func (m *Manager) client(k string) *adapter {
 	m.mu.Unlock()
 	return &adapter{kind: k, base: fmt.Sprintf("http://127.0.0.1:%d", r.Port), token: r.Token, proxy: r.Proxy, client: localClient(45 * time.Second)}
 }
+func (m *Manager) AvatarURL(k string, acc Account) string {
+	p := adapt(m.client(k))
+	provider, ok := p.(AvatarURLProvider)
+	if !ok {
+		return ""
+	}
+	return provider.AvatarURL(acc)
+}
 func (m *Manager) Proxy(k string) (string, error) {
 	if !validKind(k) {
 		return "", errors.New("无效协议")

@@ -15,11 +15,13 @@ import (
 type Account struct {
 	Ref      string `json:"ref"`
 	Nickname string `json:"nickname"`
+	Avatar   string `json:"avatar,omitempty"`
 }
 type Scan struct {
 	ID      string   `json:"-"`
 	Image   string   `json:"image"`
 	Status  string   `json:"status"`
+	Avatar  string   `json:"-"`
 	Account *Account `json:"-"`
 }
 
@@ -30,6 +32,25 @@ type Protocol interface {
 	Maintain(context.Context, Account) (string, error)
 	Logout(context.Context, Account) error
 }
+
+// Optional capabilities mirror protocol-specific client operations without
+// forcing one protocol to emulate endpoints that it does not provide.
+type HealthChecker interface {
+	CheckHealth(context.Context) error
+}
+type AccountProfileReader interface {
+	GetAccountProfile(context.Context, Account) (json.RawMessage, error)
+}
+type AccountSynchronizer interface {
+	SyncAccount(context.Context, Account) (json.RawMessage, error)
+}
+type AutoHeartbeatController interface {
+	SetAutoHeartbeat(context.Context, Account, bool) error
+}
+type AvatarURLProvider interface {
+	AvatarURL(Account) string
+}
+
 type adapter struct {
 	kind, base, token, proxy string
 	client                   *http.Client

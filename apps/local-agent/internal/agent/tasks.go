@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"net/url"
 	"robot/apps/local-agent/internal/tasks"
 	"time"
 )
@@ -26,12 +25,12 @@ func (s *Service) TaskView() (tasks.View, error) {
 		for i := range view.Tasks {
 			if b, ok := bindings[view.Tasks[i].ID]; ok {
 				view.Tasks[i].WechatNickname = b.Account.Nickname
+				view.Tasks[i].ProtocolAvatar = b.Account.Avatar
 				view.Tasks[i].ProtocolStatus = b.Status
 				view.Tasks[i].AuthProtocol = b.Protocol
 				view.Tasks[i].Paused = b.Paused
 				if b.Protocol == "yyb" && b.Account.Ref != "" {
-					status := s.protocols.Status(b.Protocol)
-					view.Tasks[i].ProtocolAvatar = "http://" + status.Address + "/accounts/avatar?ref=" + url.QueryEscape(b.Account.Ref)
+					view.Tasks[i].ProtocolAvatar = s.protocols.AvatarURL(b.Protocol, b.Account)
 				}
 			}
 		}

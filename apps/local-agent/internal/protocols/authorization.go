@@ -101,6 +101,7 @@ func (m *Manager) authorize(ctx context.Context, a *Attempt) {
 	m.mu.Unlock()
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
+	var scanAvatar string // Scoped to this attempt; never reuse a previous account's avatar.
 	for {
 		select {
 		case <-ctx.Done():
@@ -122,7 +123,13 @@ func (m *Manager) authorize(ctx context.Context, a *Attempt) {
 			m.updateAttempt(a, "pending", "暂时无法检查扫码状态，正在重试")
 			continue
 		}
+		if s.Avatar != "" {
+			scanAvatar = s.Avatar
+		}
 		if s.Account != nil && s.Account.Ref != "" {
+			if s.Account.Avatar == "" {
+				s.Account.Avatar = scanAvatar
+			}
 			m.mu.Lock()
 			if ctx.Err() != nil || m.attempts[a.TaskID] != a || terminal(a.Status) {
 				m.mu.Unlock()

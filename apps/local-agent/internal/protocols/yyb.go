@@ -2,14 +2,40 @@ package protocols
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
-	"strconv"
 )
 
 type yybAdapter struct{ *adapter }
 
 var _ Protocol = (*yybAdapter)(nil)
+var _ HealthChecker = (*yybAdapter)(nil)
+var _ AccountSynchronizer = (*yybAdapter)(nil)
+var _ AvatarURLProvider = (*yybAdapter)(nil)
+
+func (a *yybAdapter) CheckHealth(ctx context.Context) error {
+	var d struct {
+		OK bool `json:"ok"`
+	}
+	if err := a.call(ctx, "GET", "/health", nil, &d); err != nil {
+		return err
+	}
+	if !d.OK {
+		return errors.New("YYB 协议健康检查未通过")
+	}
+	return nil
+}
+
+func (a *yybAdapter) SyncAccount(ctx context.Context, acc Account) (json.RawMessage, error) {
+	var data json.RawMessage
+	err := a.call(ctx, "POST", "/accounts/resync", map[string]string{"ref": acc.Ref}, &data)
+	return data, err
+}
+
+func (a *yybAdapter) AvatarURL(acc Account) string {
+	return a.base + "/accounts/avatar?ref=" + url.QueryEscape(acc.Ref)
+}
 
 func (a *yybAdapter) Begin(ctx context.Context) (Scan, error) {
 	var d struct {
@@ -38,14 +64,17 @@ func (a *yybAdapter) Poll(ctx context.Context, id string) (Scan, error) {
 	}
 	if d.Status == "authorized" || d.Status == "confirmed" {
 		var acc struct {
-			ID               int64
-			OpenID, Nickname string
+			OpenID   string `json:"openid"`
+			Nickname string `json:"nickname"`
 		}
 		err = a.call(ctx, "POST", "/qr/"+url.PathEscape(id)+"/confirm", struct{}{}, &acc)
 		if err != nil {
 			return s, err
 		}
-		s.Account = &Account{Ref: strconv.FormatInt(acc.ID, 10), Nickname: acc.Nickname}
+		if acc.OpenID == "" {
+			return s, errors.New("YYB 确认响应缺少 openid")
+		}
+		s.Account = &Account{Ref: acc.OpenID, Nickname: acc.Nickname}
 		s.Status = "confirmed"
 	}
 	return s, nil

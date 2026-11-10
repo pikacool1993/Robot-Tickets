@@ -27,7 +27,7 @@ func TestYYBAuthorizationRequiresConfirm(t *testing.T) {
 			d = map[string]string{"status": "authorized"}
 		case "/qr/session/confirm":
 			confirmed = true
-			d = map[string]any{"id": 42, "nickname": "昵称"}
+			d = map[string]any{"id": 42, "openid": "openid-42", "nickname": "昵称"}
 		default:
 			t.Errorf("unexpected endpoint: %s", r.URL.Path)
 		}
@@ -40,8 +40,82 @@ func TestYYBAuthorizationRequiresConfirm(t *testing.T) {
 		t.Fatalf("begin: %v", e)
 	}
 	result, e := p.Poll(context.Background(), qr.ID)
-	if e != nil || !confirmed || result.Account == nil || result.Account.Ref != "42" {
+	if e != nil || !confirmed || result.Account == nil || result.Account.Ref != "openid-42" {
 		t.Fatalf("confirm not completed: %+v %v", result, e)
+	}
+}
+
+func TestProtocolSpecificClientCapabilities(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		var response any
+		switch r.URL.Path {
+		case "/api/User/GetContractProfile":
+			response = map[string]any{"Code": 0, "Success": true, "Data": map[string]any{"userInfo": map[string]any{}}}
+		case "/api/Login/AutoHeartBeat", "/api/Login/CloseAutoHeartBeat":
+			response = map[string]any{"Code": 0, "Success": true}
+		case "/health":
+			response = map[string]any{"code": 0, "data": map[string]any{"ok": true}}
+		case "/accounts/resync":
+			response = map[string]any{"code": 0, "data": map[string]any{"openid": "openid-42", "nickname": "更新昵称"}}
+		default:
+			t.Errorf("unexpected endpoint: %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer srv.Close()
+
+	acc := Account{Ref: "openid-42"}
+	w := adapt(&adapter{kind: "wechat", base: srv.URL, client: localClient(time.Second)})
+	profile, ok := w.(AccountProfileReader)
+	if !ok {
+		t.Fatal("wechat adapter does not expose contract profile")
+	}
+	if _, err := profile.GetAccountProfile(context.Background(), acc); err != nil {
+		t.Fatalf("get profile: %v", err)
+	}
+	heartbeat, ok := w.(AutoHeartbeatController)
+	if !ok {
+		t.Fatal("wechat adapter does not expose automatic heartbeat control")
+	}
+	if err := heartbeat.SetAutoHeartbeat(context.Background(), acc, true); err != nil {
+		t.Fatalf("enable automatic heartbeat: %v", err)
+	}
+	if err := heartbeat.SetAutoHeartbeat(context.Background(), acc, false); err != nil {
+		t.Fatalf("disable automatic heartbeat: %v", err)
+	}
+
+	y := adapt(&adapter{kind: "yyb", base: srv.URL, client: localClient(time.Second)})
+	health, ok := y.(HealthChecker)
+	if !ok || health.CheckHealth(context.Background()) != nil {
+		t.Fatal("YYB health check failed")
+	}
+	syncer, ok := y.(AccountSynchronizer)
+	if !ok {
+		t.Fatal("YYB adapter does not expose account sync")
+	}
+	if _, err := syncer.SyncAccount(context.Background(), acc); err != nil {
+		t.Fatalf("sync account: %v", err)
+	}
+	avatar, ok := y.(AvatarURLProvider)
+	if !ok || avatar.AvatarURL(acc) != srv.URL+"/accounts/avatar?ref=openid-42" {
+		t.Fatal("YYB avatar URL does not match the protocol client endpoint")
+	}
+	want := []string{
+		"POST /api/User/GetContractProfile?wxid=openid-42",
+		"POST /api/Login/AutoHeartBeat?wxid=openid-42",
+		"POST /api/Login/CloseAutoHeartBeat?wxid=openid-42",
+		"GET /health",
+		"POST /accounts/resync",
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("unexpected protocol calls: %#v", calls)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("call %d = %q, want %q", i, calls[i], want[i])
+		}
 	}
 }
 
@@ -109,7 +183,7 @@ func TestWeChatResponseCodesAndTransientFailure(t *testing.T) {
 		case "/api/Login/LoginGetQRCar":
 			response = map[string]any{"Code": 1, "Success": true, "Data": map[string]string{"Uuid": "qr", "QrBase64": "data:image/png;base64,dGVzdA=="}}
 		case "/api/Login/LoginCheckQR":
-			response = map[string]any{"Code": 0, "Success": true, "Data": map[string]any{"acctSectResp": map[string]string{"userName": "wx-test", "nickName": "测试"}}}
+			response = map[string]any{"Code": 0, "Success": true, "Data": map[string]any{"headImgUrl": "https://example.com/avatar.jpg", "acctSectResp": map[string]string{"userName": "wx-test", "nickName": "测试"}}}
 		case "/robot/account":
 			response = map[string]any{"Code": 0, "Success": true, "Data": map[string]string{"status": "alive"}}
 		case "/api/Login/HeartBeat":
@@ -129,7 +203,7 @@ func TestWeChatResponseCodesAndTransientFailure(t *testing.T) {
 		t.Fatalf("QR success uses code 1: %v", e)
 	}
 	scan, e := p.Poll(context.Background(), "qr")
-	if e != nil || scan.Account == nil || scan.Account.Ref != "wx-test" {
+	if e != nil || scan.Account == nil || scan.Account.Ref != "wx-test" || scan.Account.Avatar != "https://example.com/avatar.jpg" {
 		t.Fatalf("account not decoded: %+v %v", scan, e)
 	}
 	state, e := p.Maintain(context.Background(), *scan.Account)
