@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import ScanAuthorization from './ScanAuthorization.vue'
+import { confirmDialog } from './dialogKeyboard'
 import { backend, type State, type Task, type TaskView, type ProtocolStatus, type AuthAttempt } from './bridge'
 const props = defineProps<{ state: State }>()
 defineEmits<{ logout: [] }>()
@@ -48,7 +49,7 @@ async function beginAuth() {
   try { const result = await backend().BeginAuthorization(id); if (modal.value === 'auth' && activeID.value === id) attempt.value = result }
   catch (e) { saveError.value = failure(e) } finally { saving.value = false }
 }
-const modal = ref<'seat' | 'people' | 'auth' | 'delete' | null>(null), activeID = ref<number | null>(null)
+const modal = ref<'seat' | 'people' | 'auth' | 'reauth' | 'delete' | null>(null), activeID = ref<number | null>(null)
 const dialog = ref<HTMLDialogElement | null>(null)
 const draft = ref<{ mode: 'tier' | 'area'; selected: string[] }>({ mode: 'tier', selected: [] })
 const active = computed(() => view.value.tasks.find(t => t.id === activeID.value))
@@ -80,10 +81,22 @@ async function createTask() {
   try { const task = await backend().CreateTask(); if (alive) view.value.tasks.push(task) } catch (e) { error.value = failure(e) } finally { creating.value = false }
 }
 async function open(t: Task, kind: NonNullable<typeof modal.value>) {
+  if (kind === 'auth' && t.protocolStatus === 'alive') kind = 'reauth'
   activeID.value = t.id; modal.value = kind; saveError.value = ''; tip.value = null
   draft.value = { mode: t.mode, selected: [...t.selected] }
   await nextTick(); dialog.value?.showModal()
   if (kind === 'auth') await beginAuth()
+}
+async function confirmReauthorization() {
+  if (saving.value || modal.value !== 'reauth') return
+  modal.value = 'auth'
+  await beginAuth()
+}
+function confirmTaskDialog() {
+  if (saving.value) return
+  if (modal.value === 'reauth') { void confirmReauthorization(); return }
+  if (modal.value === 'delete') { void deleteTask(); return }
+  close()
 }
 function close(discard = false) {
   if (saving.value || (modal.value === 'seat' && saveError.value && !discard)) return
@@ -130,7 +143,6 @@ async function deleteTask() {
   <main class="tw" aria-label="任务工作台">
     <header class="tw-chrome"><div class="tw-brand">ROBOT <span>/ LOCAL AGENT</span></div><div class="tw-session"><span :class="{ disconnected: state.connection !== '已连接' }">{{ state.connection }}</span><span>客户端 {{ state.clientNumber }}</span><button class="tw-link" @click="$emit('logout')">退出登录</button></div></header>
     <section class="tw-body">
-      <div class="tw-heading"><div><h1>任务</h1><p>{{ view.catalog.stadium || '座位目录未加载' }} <span class="tw-divider">/</span> {{ view.tasks.length }} 个任务</p></div><button class="tw-primary" :disabled="creating || loading" @click="createTask">＋ {{ creating ? '正在创建…' : '新建任务' }}</button></div>
       <section class="tw-service" aria-label="协议服务">
         <div><strong>{{ props.state.authProtocol === 'yyb' ? 'YYB' : '微信' }}协议</strong><span>{{ serviceLabels[protocol?.state || ''] || '检查中' }}</span><small>{{ protocol?.address }} · {{ protocol?.proxy || '直连' }}</small></div>
         <div><button :disabled="protocolBusy || protocol?.state === 'running'" @click="serviceAction('start')">启动协议</button><button :disabled="protocolBusy" @click="serviceAction('restart')">重启</button><button :disabled="protocolBusy || protocol?.state === 'stopped'" @click="serviceAction('stop')">关闭协议</button></div>
@@ -139,10 +151,13 @@ async function deleteTask() {
       <div v-if="error" class="tw-alert" role="alert">{{ error }} <button class="tw-link" @click="load().then(() => error = '').catch(e => error = failure(e))">重试读取</button></div>
       <div v-if="view.configError" class="tw-alert" role="alert">{{ view.configError }}</div>
       <div v-if="state.notice" class="tw-alert">{{ state.notice }}</div>
+      <section class="tw-task-controls" aria-label="任务操作">
+      <div class="tw-heading"><div><h1>任务 <span class="tw-task-count">{{ view.tasks.length }}</span></h1><p>{{ view.catalog.stadium || '座位目录未加载' }}</p></div><div class="tw-task-actions"><button class="tw-primary" :disabled="creating || loading" @click="createTask">＋ {{ creating ? '正在创建…' : '新建任务' }}</button></div></div>
       <div class="tw-toolbar" role="search" aria-label="任务搜索">
         <div class="tw-search"><input v-model="search" type="search" aria-label="搜索任务" placeholder="搜索任务编号、微信昵称或观演人" autocomplete="off" :disabled="loading" @input="tip = null"/><button v-if="search" class="tw-search-clear" type="button" aria-label="清空搜索" @click="search = ''; tip = null">清空</button></div>
         <span class="tw-search-count" role="status" aria-live="polite">{{ loading ? '正在读取…' : searchTerms.length ? `找到 ${filteredTasks.length} / ${view.tasks.length} 个任务` : `共 ${view.tasks.length} 个任务` }}</span>
       </div>
+      </section>
       <div class="tw-columns" aria-hidden="true"><span>编号</span><span>微信账号</span><span>座位要求</span><span>观演人</span><span>最新日志</span><span></span></div>
       <div v-if="loading" class="tw-empty" role="status">正在读取本地任务…</div>
       <div v-else-if="!view.tasks.length && !error" class="tw-empty"><h2>创建你的第一个任务</h2><p>座位默认选择 A、B、C、D、E，微信账号可稍后授权。</p><button class="tw-primary" :disabled="creating" @click="createTask">＋ 新建任务</button></div>
@@ -160,11 +175,11 @@ async function deleteTask() {
       <footer class="tw-footer"><span>配置自动保存 · 当前客户端共享</span><span>深海石墨</span></footer>
     </section>
     <div v-if="tip" role="tooltip" class="tw-tooltip" :style="{ left: `${tip.left}px`, top: `${tip.top}px` }">{{ tip.text }}</div>
-    <dialog ref="dialog" class="tw-dialog" :class="{ wide: modal === 'seat', 'tw-scan-dialog': modal === 'auth' }" aria-labelledby="tw-dialog-title" @cancel.prevent="close()">
+    <dialog ref="dialog" class="tw-dialog" :class="{ wide: modal === 'seat', 'tw-scan-dialog': modal === 'auth' }" aria-labelledby="tw-dialog-title" @cancel.prevent="close()" @keydown="modal !== 'auth' && confirmDialog($event, confirmTaskDialog)">
       <template v-if="modal && active">
-        <div class="tw-dialog-head"><div><h2 id="tw-dialog-title">{{ modal === 'seat' ? '座位要求' : modal === 'people' ? '观演人' : modal === 'delete' ? '删除任务' : '授权账号' }}</h2><p>编号 {{ active.id }}<template v-if="modal === 'seat'"> · {{ view.catalog.stadium }}</template></p></div><button class="tw-close" aria-label="关闭弹窗" :disabled="saving || (modal === 'seat' && !!saveError)" @click="close()">×</button></div>
+        <div class="tw-dialog-head"><div><h2 id="tw-dialog-title">{{ modal === 'seat' ? '座位要求' : modal === 'people' ? '观演人' : modal === 'delete' ? '删除任务' : modal === 'reauth' ? '确认重新授权' : '授权账号' }}</h2><p>编号 {{ active.id }}<template v-if="modal === 'seat'"> · {{ view.catalog.stadium }}</template></p></div><button class="tw-close" aria-label="关闭弹窗" :disabled="saving || (modal === 'seat' && !!saveError)" @click="close()">×</button></div>
         <div class="tw-dialog-content">
-          <div v-if="saveError" class="tw-alert" role="alert">{{ saveError }}<div v-if="modal === 'seat'" class="tw-error-actions"><button @click="saveSeats">重试保存</button><button @click="close(true)">放弃未保存更改</button></div></div>
+          <div v-if="saveError && modal !== 'auth'" class="tw-alert" role="alert">{{ saveError }}<div v-if="modal === 'seat'" class="tw-error-actions"><button @click="saveSeats">重试保存</button><button @click="close(true)">放弃未保存更改</button></div></div>
           <template v-if="modal === 'seat'">
             <div v-if="view.configError" class="tw-alert">{{ view.configError }}</div>
             <div class="tw-switch" role="group" aria-label="座位选择模式"><button :aria-pressed="draft.mode === 'tier'" :disabled="!!view.configError" @click="setMode('tier')">指定票类</button><button :aria-pressed="draft.mode === 'area'" :disabled="!!view.configError" @click="setMode('area')">固定区域</button></div>
@@ -174,13 +189,14 @@ async function deleteTask() {
             </fieldset>
           </template>
           <template v-else-if="modal === 'people'"><div class="tw-unavailable"><h3>请先授权微信账号</h3><p>授权成功后可获取并勾选账号下的观演人。</p><p>微信／YYB 协议尚未接入，暂时无法获取或刷新观演人。</p><button @click="open(active, 'auth')">前往授权</button></div></template>
-          <ScanAuthorization v-else-if="modal === 'auth'" :task-id="active.id" :client-number="state.clientNumber" :protocol="attempt?.protocol || state.authProtocol" :image="safeImage" :status="attempt?.status || ''" :message="attempt?.message || ''" :remaining="remaining" :busy="saving" :logged-in="active.protocolStatus === 'alive'" @refresh="beginAuth"/>
+          <ScanAuthorization v-else-if="modal === 'auth'" :task-id="active.id" :client-number="state.clientNumber" :protocol="attempt?.protocol || state.authProtocol" :image="safeImage" :status="attempt?.status || ''" :message="saveError || attempt?.message || ''" :remaining="remaining" :busy="saving" :logged-in="active.protocolStatus === 'alive'" @refresh="beginAuth"/>
+          <template v-else-if="modal === 'reauth'"><p>任务 {{ state.clientNumber }}-{{ active.id }} 已登录协议账号{{ active.wechatNickname ? `「${active.wechatNickname}」` : '' }}，确认重新扫码授权吗？</p><p class="tw-note">新授权成功后才会替换绑定；取消、过期或失败时保留原绑定，原账号是否可用单独检查。</p></template>
           <template v-else><p class="tw-delete-note">确认删除 {{ active.id }}？此任务的配置和本地授权信息将被清除，删除不可恢复，编号不再使用。协议支持时尝试退出账号。</p></template>
         </div>
-        <div class="tw-dialog-footer"><span role="status" aria-live="polite">{{ saving ? '正在保存…' : saveError ? '保存失败，修改尚未落盘' : modal === 'seat' ? '修改自动保存' : '' }}</span><div><template v-if="modal === 'delete'"><button :disabled="saving" @click="close()">取消</button><button class="tw-danger" :disabled="saving" @click="deleteTask">确认删除</button></template><button v-else class="tw-primary" :disabled="saving || (modal === 'seat' && !!saveError)" @click="close()">{{ modal === 'seat' ? '完成' : '关闭' }}</button></div></div>
+        <div class="tw-dialog-footer"><span role="status" aria-live="polite">{{ saving ? '正在保存…' : saveError ? '保存失败，修改尚未落盘' : modal === 'seat' ? '修改自动保存' : '' }}</span><div><template v-if="modal === 'delete'"><button :disabled="saving" @click="close()">取消</button><button class="tw-danger" :disabled="saving" @click="deleteTask">确认删除</button></template><template v-else-if="modal === 'reauth'"><button :disabled="saving" @click="close()">取消</button><button class="tw-primary" :disabled="saving" @click="confirmReauthorization">确认重新授权</button></template><button v-else class="tw-primary" :disabled="saving || (modal === 'seat' && !!saveError)" @click="close()">{{ modal === 'seat' ? '完成' : '关闭' }}</button></div></div>
       </template>
     </dialog>
-    <dialog ref="controlDialog" class="tw-dialog" aria-labelledby="service-confirm" @cancel.prevent="!protocolBusy && controlDialog?.close()">
+    <dialog ref="controlDialog" class="tw-dialog" aria-labelledby="service-confirm" @keydown="confirmDialog($event, controlService)" @cancel.prevent="!protocolBusy && controlDialog?.close()">
       <div class="tw-dialog-head"><h2 id="service-confirm">确认{{ controlAction === 'stop' ? '关闭' : '重启' }}协议</h2></div>
       <div class="tw-dialog-content"><p>受影响任务：{{ protocol?.affected.length ? protocol.affected.join('、') : '暂无已绑定任务' }}。正在等待的扫码也会取消。执行后将取消相关请求并暂停任务，账号凭据保留。</p><p v-if="controlAction === 'restart'">服务恢复后重新检查账号，任务保持暂停。</p><p v-if="protocolError" class="tw-alert" role="alert">{{ protocolError }}</p></div>
       <div class="tw-dialog-footer"><span>{{ protocolBusy ? '处理中…' : '' }}</span><div><button :disabled="protocolBusy" @click="controlDialog?.close()">取消</button><button class="tw-primary" :disabled="protocolBusy" @click="controlService">确认{{ controlAction === 'stop' ? '关闭' : '重启' }}</button></div></div>
@@ -189,8 +205,14 @@ async function deleteTask() {
 </template>
 
 <style scoped>
-.tw-dialog.tw-scan-dialog{box-sizing:border-box;width:370px}
-.tw-scan-dialog .tw-dialog-head{padding:9px 12px}.tw-scan-dialog .tw-dialog-head h2{font-size:13px}.tw-scan-dialog .tw-dialog-head p{display:none}.tw-scan-dialog .tw-dialog-content{padding:10px}.tw-scan-dialog .tw-dialog-footer{display:none}
+.tw-task-controls{position:sticky;top:0;z-index:10;margin:0 -22px 18px;padding:12px 22px;background:var(--bg);border-bottom:1px solid var(--line);box-shadow:0 6px 12px var(--app-shadow)}
+.tw-task-controls .tw-heading{margin-bottom:10px;flex-wrap:wrap}
+.tw-task-controls .tw-toolbar{margin-bottom:0}
+.tw-task-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-left:auto}
+.tw-task-count{font-size:14px;font-weight:400;color:var(--muted);margin-left:6px;font-variant-numeric:tabular-nums}
+@media(max-width:760px){.tw-task-controls{margin-left:-12px;margin-right:-12px;padding:10px 12px}}
+.tw-dialog.tw-scan-dialog{box-sizing:border-box;width:370px;height:fit-content;min-height:0;max-height:none;overflow:visible}
+.tw-scan-dialog .tw-dialog-head{position:static;padding:6px 12px;border-radius:12px 12px 0 0}.tw-scan-dialog .tw-dialog-head h2{font-size:13px}.tw-scan-dialog .tw-dialog-head p{display:none}.tw-scan-dialog .tw-dialog-content{padding:6px 10px;overflow:visible}.tw-scan-dialog .tw-dialog-footer{display:none}
 .tw-service{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:18px}.tw-service>div{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tw-service span,.tw-service small{color:var(--muted);font-size:12px}.tw-service p{width:100%;font-size:12px;color:var(--app-warning)}.tw-auth{text-align:center}.tw-auth img{display:block;width:220px;max-width:100%;height:auto;margin:14px auto;background:white}.tw-auth p{font-size:13px;margin:12px 0;overflow-wrap:anywhere}
 .tw{--bg:var(--app-bg);--panel:var(--app-panel);--ink:var(--app-ink);--muted:var(--app-muted);--line:var(--app-line);--soft:var(--app-soft);--active:var(--app-accent);--selected:var(--app-selected);max-width:none;min-height:100vh;margin:0;padding:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}
 .tw button,.tw select{font:inherit}.tw button{color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 11px}.tw button:hover:not(:disabled){background:var(--soft)}.tw button:focus-visible,.tw input:focus-visible,.tw select:focus-visible{outline:2px solid var(--active);outline-offset:3px}.tw button.tw-primary{background:var(--active);border-color:var(--active);color:var(--app-on-accent)}.tw button.tw-danger{background:var(--app-danger);border-color:var(--app-danger);color:var(--app-on-danger)}.tw button:disabled{cursor:default;opacity:.55}.tw h1,.tw h2,.tw h3,.tw p{margin:0;letter-spacing:normal}.tw h1{font-size:22px;font-weight:600}.tw h2{font-size:17px;font-weight:600}.tw h3{font-size:14px;font-weight:600}.tw p{color:var(--muted);line-height:1.6}.tw label{color:inherit;font-size:inherit;margin:0}.tw input[type=checkbox]{accent-color:var(--active);width:15px;height:15px;margin:0;flex-shrink:0}.tw-chrome{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:18px 24px;background:var(--panel);border-bottom:1px solid var(--line)}.tw-brand{font-weight:600;letter-spacing:.06em}.tw-brand span{font-size:11px;font-weight:400;color:var(--muted)}.tw-session{display:flex;align-items:center;gap:16px;font-size:12px;color:var(--muted)}.tw-session .disconnected{color:var(--app-warning)}.tw button.tw-link{padding:0;border:0;background:transparent;color:var(--active);font-size:12px;text-align:left}.tw-body{padding:26px 22px 18px}.tw-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px}.tw-heading p{font-size:12px;margin-top:4px}.tw-divider{margin:0 8px;color:var(--line)}.tw-columns,.tw-task{display:grid;grid-template-columns:40px minmax(110px,1fr) minmax(150px,1.35fr) minmax(105px,1fr) minmax(125px,1.4fr) 48px;gap:12px;align-items:center}.tw-columns{padding:0 14px 9px;font-size:12px;color:var(--muted)}.tw-task{padding:14px;height:96px;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-bottom:10px}.tw-task>*{min-width:0}.tw-number{font-size:17px;color:var(--muted);font-variant-numeric:tabular-nums}.tw-account{position:relative;padding-left:38px;display:flex;flex-direction:column;align-items:flex-start;gap:3px;overflow:hidden}.tw-account-avatar{position:absolute;left:0;top:2px;width:30px;height:30px;object-fit:cover;border-radius:50%;background:var(--soft)}.tw-account strong{font-weight:600;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tw-account>span{font-size:12px;color:var(--muted);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tw button.tw-summary{height:60px;width:100%;background:var(--soft);border-color:transparent;text-align:left;padding:8px 9px;min-width:0}.tw button.tw-summary:hover{border-color:var(--active);background:var(--selected)}.tw-field,.tw-value{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tw-field{font-size:12px;color:var(--muted);margin-bottom:3px}.tw-log{font-size:12px;color:var(--muted);overflow:hidden}.tw-log time{display:block;font-size:11px;margin-bottom:3px}.tw-log>span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}.tw button.tw-delete{border:0;background:transparent;color:var(--muted);font-size:12px;padding:5px 0;white-space:nowrap}.tw-footer{display:flex;justify-content:space-between;gap:12px;border:0;padding-top:6px;font-size:12px;color:var(--muted)}.tw-empty{text-align:center;padding:65px 16px;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-bottom:14px}.tw-empty p{margin:10px 0 22px}.tw-alert{border:1px solid var(--app-warning-line);background:var(--app-warning-bg);color:var(--app-warning);font-size:12px;padding:10px 12px;border-radius:6px;margin-bottom:16px;overflow-wrap:anywhere}.tw-error-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.tw-tooltip{position:fixed;max-width:min(340px,calc(100vw - 16px));max-height:240px;overflow:auto;background:var(--panel);border:1px solid var(--line);color:var(--ink);box-shadow:0 5px 18px var(--app-shadow);border-radius:7px;padding:10px 12px;font-size:12px;overflow-wrap:anywhere;z-index:20;pointer-events:none}.tw-dialog{padding:0;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:12px;width:420px;max-width:calc(100vw - 24px);max-height:85vh;box-shadow:0 15px 50px var(--app-shadow)}.tw-dialog.wide{width:780px}.tw-dialog::backdrop{background:var(--app-backdrop)}.tw-dialog-head{position:sticky;top:0;z-index:2;background:var(--panel);padding:18px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}.tw-dialog-head p{font-size:12px;margin-top:4px}.tw button.tw-close{border:0;padding:5px 9px;color:var(--muted)}.tw-dialog-content{padding:20px}.tw-dialog-footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:var(--muted);z-index:2}.tw-dialog-footer>div{display:flex;gap:8px}.tw-switch{display:inline-flex;border:1px solid var(--line);border-radius:7px;padding:3px;gap:2px;margin-bottom:16px}.tw-switch button{border:0;background:transparent;padding:5px 12px;font-size:13px}.tw-switch button[aria-pressed=true]{color:var(--app-on-accent);background:var(--active)}.tw-options{border:0;padding:0;margin:0;min-width:0}.tw-tier-options{display:flex;gap:8px;flex-wrap:wrap}.tw label.tw-choice{display:flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--panel);padding:9px 12px;border-radius:6px;min-width:90px;cursor:pointer}.tw label.tw-choice.checked{background:var(--selected);border-color:var(--active)}.tw-choice small{display:block;font-size:11px;color:var(--muted)}.tw-note{font-size:12px;margin-top:12px!important}.tw-area-group+.tw-area-group{margin-top:16px}.tw label.tw-group-heading{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:8px;cursor:pointer}.tw-group-heading small{color:var(--muted);font-size:12px}.tw-area-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:7px}.tw label.tw-area{height:56px;min-width:0;padding:7px 8px}.tw-area-copy{flex:1;min-width:0}.tw-area-top{display:flex;gap:6px;align-items:center;min-width:0;white-space:nowrap}.tw-area-code{flex-shrink:0}.tw-special{font-size:11px;color:var(--muted);min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tw-area small{white-space:nowrap}.tw-unavailable{background:var(--soft);padding:18px;border-radius:7px}.tw-unavailable p{font-size:13px;margin:8px 0 14px}.tw-delete-note{font-size:13px}.tw-protocol{display:block;margin-bottom:20px!important;font-size:13px!important}.tw select{display:block;width:100%;margin-top:8px;padding:9px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px}

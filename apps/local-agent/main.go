@@ -90,7 +90,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	a.mu.Unlock()
 	// Return to the Windows message loop before opening a native dialog.
 	go func() {
-		answer, err := wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{Type: wruntime.QuestionDialog, Title: "退出 Robot", Message: "确定退出程序吗？客户端登录、扫码等待和账号维护将结束；已启动的微信或 YYB 协议服务继续在后台运行。", Buttons: []string{"Yes", "No"}, DefaultButton: "No", CancelButton: "No"})
+		answer, err := wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{Type: wruntime.QuestionDialog, Title: "退出 Robot", Message: "确定退出程序吗？客户端登录、扫码等待和账号维护将结束；已启动的微信或 YYB 协议服务继续在后台运行。", Buttons: []string{"Yes", "No"}, DefaultButton: "Yes", CancelButton: "No"})
 		a.mu.Lock()
 		a.closing = false
 		a.allowClose = err == nil && answer == "Yes"

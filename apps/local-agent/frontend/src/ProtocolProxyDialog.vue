@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { confirmDialog } from './dialogKeyboard'
 const props = defineProps<{ protocol: string; initial: string; busy: boolean; error: string; restart: boolean }>()
 const emit = defineEmits<{ cancel: []; confirm: [proxy: string, confirmed: boolean] }>()
 const dialog = ref<HTMLDialogElement | null>(null), proxy = ref(props.initial), reveal = ref(false)
+function confirmProxy() { if (!props.busy) emit('confirm', proxy.value.trim(), props.restart) }
 onMounted(() => dialog.value?.showModal())
 onUnmounted(() => { proxy.value = ''; dialog.value?.close() })
 </script>
 <template>
-<dialog ref="dialog" class="proxy-dialog" aria-labelledby="proxy-title" @cancel.prevent="!busy && emit('cancel')">
-  <form @submit.prevent="emit('confirm', proxy.trim(), restart)">
+<dialog ref="dialog" class="proxy-dialog" aria-labelledby="proxy-title" @cancel.prevent="!busy && emit('cancel')" @keydown="confirmDialog($event, confirmProxy)">
+  <form @submit.prevent="confirmProxy">
     <header><div><h2 id="proxy-title">{{ protocol === 'yyb' ? 'YYB' : '微信' }}协议代理设置</h2><p>登录前确认 · 留空使用直连</p></div><button type="button" :disabled="busy" aria-label="关闭" @click="emit('cancel')">×</button></header>
     <section>
       <label>代理地址（选填）<input v-model="proxy" :type="reveal ? 'text' : 'password'" autocomplete="off" :disabled="busy" placeholder="http://user:password@host:port"/></label>

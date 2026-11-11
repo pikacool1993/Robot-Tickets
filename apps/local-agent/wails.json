@@ -5,7 +5,7 @@
   "frontend:install": "pnpm install --frozen-lockfile",
   "frontend:build": "pnpm build",
   "frontend:dev:watcher": "pnpm dev",
-  "frontend:dev:serverUrl": "auto",
+  "frontend:dev:serverUrl": "http://127.0.0.1:5173",
   "author": {"name": "Robot"},
   "info": {"companyName": "Robot", "productName": "Robot", "productVersion": "0.1.0", "copyright": "Robot"}
 }

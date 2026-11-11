@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { backend, type State, type Form } from './bridge'
 import TaskWorkspace from './TaskWorkspace.vue'
 import ProtocolProxyDialog from './ProtocolProxyDialog.vue'
+import { confirmDialog } from './dialogKeyboard'
 const state = ref<State | null>(null)
 const form = reactive<Form>({ username: '', password: '', client_number: '', remember: false, auth_protocol: '', resetTaskIDs: false })
 const error = ref(''); const busy = ref(false); const ready = ref(false); const reveal = ref(false)
@@ -28,6 +29,7 @@ async function run(action: () => Promise<void>) {
 }
 async function login() {
   if (busy.value || proxyOpen.value) return
+  if (!form.auth_protocol) { error.value = '请选择微信或 YYB 协议'; return }
   if (form.resetTaskIDs) { resetDialog.value?.showModal(); return }
   await openProxyDialog()
 }
@@ -37,7 +39,7 @@ async function openProxyDialog() {
   try { proxyInitial.value = await backend().GetProtocolProxy(form.auth_protocol); proxyOpen.value = true }
   catch (e) { error.value = message(e) } finally { busy.value = false }
 }
-function confirmReset() { resetDialog.value?.close(); void openProxyDialog() }
+function confirmReset() { if (busy.value) return; resetDialog.value?.close(); void openProxyDialog() }
 async function confirmProxy(proxy: string, confirmRestart: boolean) {
   if (busy.value) return
   busy.value = true; proxyError.value = ''
@@ -55,24 +57,58 @@ onUnmounted(() => { if (timer) clearInterval(timer); form.password = '' })
 </script>
 
 <template>
-  <main v-if="!state?.loggedIn">
-    <header><div class="brand"><span class="mark">R</span><span>Robot<small>本地客户端</small></span></div><span class="edition">WINDOWS · 0.1.0</span></header>
-    <div class="layout">
-      <aside><span class="eyebrow">LOCAL AGENT</span><h1>连接云端，<br/>从这里开始。</h1><p>独立实例，本地运行。<br/>登录后进入你的工作空间。</p><div class="instance"><span class="dot"></span>当前文件夹 · 独立实例<code>{{ state?.instanceID || '正在初始化…' }}</code></div></aside>
-      <section class="card" aria-live="polite">
+  <main v-if="!state?.loggedIn" class="login-page">
+      <section class="card login-card" aria-label="客户端登录">
+        <div class="brand"><span class="mark">R</span><span>Robot<small>本地客户端</small></span></div>
         <div v-if="error" role="alert" class="notice error">{{ error }}</div>
         <div v-if="state?.notice" class="notice">{{ state.notice }}</div>
         <template v-if="!ready"><h2>正在初始化</h2><p>准备本地配置与运行环境。</p></template>
         <template v-else-if="!state?.configured"><span class="step">首次使用</span><h2>导入通信配置</h2><p>选择管理员提供的 <strong>bootstrap.cfg</strong> 文件，配置完成后即可登录。</p><div class="file-box"><span class="file-icon">CFG</span><strong>客户端通信配置</strong><span>仅接受有效的 Robot 配置文件</span></div><button class="primary full" :disabled="busy" @click="importConfig">{{ busy ? '正在导入…' : '选择 .cfg 配置文件' }}</button><small class="hint">如软件包已附带配置，首次启动会自动导入。</small></template>
-        <template v-else-if="!state.loggedIn"><span class="step">身份验证</span><h2>代理商登录</h2><p>请输入你的账号与客户端编号，并选择本客户端的授权协议。</p><form @submit.prevent="login"><label>授权协议<span class="protocol-select" :class="{ disabled: busy }"><select v-model="form.auth_protocol" autocomplete="off" required :disabled="busy"><option disabled value="">请选择微信或 YYB</option><option value="wechat">微信协议</option><option value="yyb">YYB 协议</option></select></span></label><label>用户名<input v-model="form.username" autocomplete="off" maxlength="64" required :disabled="busy" placeholder="请输入代理商用户名"/></label><label>密码<div class="password"><input v-model="form.password" :type="reveal ? 'text' : 'password'" autocomplete="off" required :disabled="busy" placeholder="请输入密码"/><button type="button" class="reveal" :aria-label="reveal ? '隐藏密码' : '显示密码'" @click="reveal = !reveal">{{ reveal ? '隐藏' : '显示' }}</button></div></label><label>客户端编号<input v-model="form.client_number" autocomplete="off" maxlength="128" required :disabled="busy" placeholder="请输入全局唯一的编号"/></label><label class="checkbox"><input v-model="form.resetTaskIDs" type="checkbox" :disabled="busy"/>登录成功后重置本地任务编号</label><label class="checkbox"><input v-model="form.remember" type="checkbox" :disabled="busy"/>记住登录信息</label><button class="primary full" :disabled="busy">{{ busy ? '正在登录…' : '登录' }}</button></form><small class="hint">重置将清除本机现有任务及协议账号绑定，并从编号 1 重新开始。</small><small class="hint">每次打开软件均需手动登录。授权协议按客户端保存，所有任务共用。</small><div class="server"><span :title="state.serverURL">{{ state.serverURL }}</span><button class="text" :disabled="busy" @click="importConfig">重新导入配置</button></div></template>
+        <template v-else-if="!state.loggedIn">
+          <h2>代理商登录</h2><p class="login-subtitle">登录你的本地工作空间</p>
+          <form @submit.prevent="login">
+            <div class="login-protocols" role="group" aria-label="授权协议">
+              <button v-for="option in [{ value: 'wechat', label: '微信协议' }, { value: 'yyb', label: 'YYB 协议' }]" :key="option.value" type="button" :aria-pressed="form.auth_protocol === option.value" :disabled="busy" @click="form.auth_protocol = option.value as 'wechat' | 'yyb'">{{ option.label }}</button>
+            </div>
+            <label>用户名<input v-model="form.username" autocomplete="off" maxlength="64" required :disabled="busy" placeholder="代理商账号"/></label>
+            <label>密码<div class="password"><input v-model="form.password" :type="reveal ? 'text' : 'password'" autocomplete="off" required :disabled="busy" placeholder="请输入密码"/><button type="button" class="reveal" :aria-label="reveal ? '隐藏密码' : '显示密码'" @click="reveal = !reveal">{{ reveal ? '隐藏' : '显示' }}</button></div></label>
+            <label>客户端编号<input v-model="form.client_number" autocomplete="off" maxlength="128" required :disabled="busy" placeholder="例如 A01"/></label>
+            <div class="login-options"><label class="checkbox"><input v-model="form.remember" type="checkbox" :disabled="busy"/>记住登录信息</label><label class="checkbox"><input v-model="form.resetTaskIDs" type="checkbox" :disabled="busy"/>重置任务编号</label></div>
+            <p v-if="form.resetTaskIDs" class="login-reset-note">登录成功后将清除本机任务及其账号绑定，编号从 1 开始；协议账号本身不退出。</p>
+            <button class="primary full" :disabled="busy">{{ busy ? '正在登录…' : '登录客户端' }}</button>
+          </form>
+          <div class="server"><span :title="state.serverURL">已导入通信配置</span><button class="text" :disabled="busy" @click="importConfig">重新导入配置</button></div>
+        </template>
       </section>
-    </div><footer>本地配置与登录信息按实例独立保存<span>Robot / Local Agent</span></footer>
   </main>
-  <dialog ref="resetDialog" class="reset-dialog" aria-labelledby="reset-title" @cancel.prevent="resetDialog?.close()"><header><span class="reset-mark">!</span><div><h2 id="reset-title">重置任务编号</h2><p>此操作会清除本机现有任务</p></div></header><section><p>登录成功后，将删除本地所有任务及其协议账号绑定，并从编号 1 重新开始。</p><p class="reset-warning">任务删除后无法恢复，协议账号本身不会退出。</p></section><footer><button type="button" @click="resetDialog?.close()">取消</button><button type="button" class="reset-confirm" @click="confirmReset">确认并继续登录</button></footer></dialog>
+  <dialog ref="resetDialog" class="reset-dialog" aria-labelledby="reset-title" @keydown="confirmDialog($event, confirmReset)" @cancel.prevent="resetDialog?.close()"><header><span class="reset-mark">!</span><div><h2 id="reset-title">重置任务编号</h2><p>此操作会清除本机现有任务</p></div></header><section><p>登录成功后，将删除本地所有任务及其协议账号绑定，并从编号 1 重新开始。</p><p class="reset-warning">任务删除后无法恢复，协议账号本身不会退出。</p></section><footer><button type="button" @click="resetDialog?.close()">取消</button><button type="button" class="reset-confirm" @click="confirmReset">确认并继续登录</button></footer></dialog>
   <TaskWorkspace v-if="state?.loggedIn && state" :state="state" @logout="run(async () => { await backend().Logout() })" />
   <ProtocolProxyDialog v-if="proxyOpen" :protocol="form.auth_protocol" :initial="proxyInitial" :busy="busy" :error="proxyError" :restart="proxyRestart" @cancel="cancelProxy" @confirm="confirmProxy" />
 </template>
 <style scoped>
+.login-page{max-width:none;min-height:100vh;padding:28px 16px;display:grid;place-items:center}
+.login-page .login-card{width:360px;max-width:100%;margin:0;padding:22px;border-radius:12px}
+.login-page .brand{gap:9px;font-size:15px;margin-bottom:22px;letter-spacing:.03em}
+.login-page .mark{width:30px;height:30px;border-radius:7px;font-size:17px}
+.login-page .brand small{font-size:11px;margin-top:0;letter-spacing:normal}
+.login-page h2{font-size:20px;margin:0 0 5px;letter-spacing:normal}
+.login-page .login-subtitle{font-size:12px;margin:0 0 18px}
+.login-page form{display:grid;gap:12px}
+.login-page label{margin:0;font-size:12px}
+.login-page input:not([type=checkbox]){margin-top:5px;padding:9px 10px;border-radius:6px;font-size:13px;background:var(--app-bg)}
+.login-page .password input{padding-right:47px}
+.login-page .reveal{top:0;bottom:0;right:8px;padding:0;font-size:11px}
+.login-protocols{display:flex;gap:4px;background:var(--app-bg);border:1px solid var(--app-line);border-radius:7px;padding:3px}
+.login-protocols button{flex:1;padding:6px 10px;border:0;border-radius:5px;background:transparent;color:var(--app-muted);font:inherit;font-size:12px}
+.login-protocols button[aria-pressed=true]{background:var(--app-soft);color:var(--app-accent)}
+.login-options{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:1px 0}
+.login-page .checkbox{margin:0;gap:6px;font-size:11px}
+.login-page .checkbox input{margin:0;width:13px;height:13px}
+.login-page .primary{padding:10px;border-radius:6px;font-size:13px;font-weight:600}
+.login-page .login-reset-note{font-size:11px;color:var(--app-warning);background:var(--app-warning-bg);padding:8px 10px;border-radius:5px;margin:0}
+.login-page .server{margin-top:16px;padding-top:13px;font-size:11px}
+.login-page .notice{margin-bottom:12px}
+@media(pointer:coarse){.login-page input:not([type=checkbox]){font-size:16px}.login-protocols button,.login-page .checkbox{min-height:40px}}
 .reset-dialog{width:420px;max-width:calc(100vw - 28px);padding:0;border:1px solid var(--app-line);border-radius:10px;background:var(--app-panel);color:var(--app-ink);font:14px/1.55 'Segoe UI','Microsoft YaHei',sans-serif;box-shadow:0 18px 55px var(--app-shadow)}
 .reset-dialog::backdrop{background:var(--app-backdrop);backdrop-filter:blur(2px)}
 .reset-dialog header{display:flex;align-items:center;gap:12px;padding:20px 22px;border-bottom:1px solid var(--app-line)}

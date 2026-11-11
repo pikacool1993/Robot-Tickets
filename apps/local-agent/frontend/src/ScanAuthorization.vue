@@ -43,23 +43,23 @@ async function makeImage(image: string, number: string, lines: string[]): Promis
     }
     wrapped.push({ text: row, important })
   })
-  const height = padding + qrSize + 36 + (lines.length ? 36 + wrapped.length * 16 + 10 : 0)
+  const height = padding + qrSize + 26 + (lines.length ? 28 + wrapped.length * 15 + 8 : 0)
   // Render at twice the display resolution to keep the small text clear when shared.
   canvas.width = width * 2; canvas.height = height * 2
   ctx.scale(2, 2)
   ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, width, height)
   ctx.imageSmoothingEnabled = false
   ctx.drawImage(qr, (width - qrSize) / 2, padding, qrSize, qrSize)
-  ctx.fillStyle = '#182331'; ctx.textAlign = 'center'; ctx.font = '600 17px "Microsoft YaHei", sans-serif'
-  ctx.fillText(number, width / 2, padding + qrSize + 24, width - padding * 2)
+  ctx.fillStyle = '#182331'; ctx.textAlign = 'center'; ctx.font = '500 13px "Microsoft YaHei", sans-serif'
+  ctx.fillText(number, width / 2, padding + qrSize + 17, width - padding * 2)
   if (lines.length) {
-    const top = padding + qrSize + 36
+    const top = padding + qrSize + 26
     ctx.strokeStyle = '#dce2e9'; ctx.beginPath(); ctx.moveTo(padding, top); ctx.lineTo(width - padding, top); ctx.stroke()
     ctx.textAlign = 'left'; ctx.font = '600 10px "Microsoft YaHei", sans-serif'; ctx.fillText('扫码须知', padding, top + 17)
     ctx.font = font
     wrapped.forEach((line, index) => {
       ctx.fillStyle = line.important ? instructionColors.important : instructionColors.normal
-      ctx.fillText(line.text, padding, top + 34 + index * 16)
+      ctx.fillText(line.text, padding, top + 28 + index * 15)
     })
   }
   return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('无法生成 PNG 图片')), 'image/png'))
@@ -91,9 +91,11 @@ async function copy(withInstructions: boolean) {
       <div class="scan-instructions"><h4>扫码须知</h4><ol><li v-for="(line, index) in instructions" :key="line" :class="{ important: index === instructions.length - 1 }">{{ line }}</li></ol></div>
     </div>
     <div class="scan-status" role="status" aria-live="polite"><span :class="{ attention: terminal && status !== 'confirmed' }">{{ statusText }}</span><time v-if="image && !terminal && !busy">{{ countdown }}</time><button :disabled="busy" @click="$emit('refresh')">重新获取二维码</button></div>
-    <p v-if="message && message !== statusText" class="scan-message">{{ message }}</p>
     <div class="scan-actions"><button title="复制二维码和客户端任务编号" :disabled="!canCopy || copying" @click="copy(false)">复制二维码</button><button class="scan-copy-full" title="复制二维码、客户端任务编号和扫码说明" :disabled="!canCopy || copying" @click="copy(true)">复制含说明</button></div>
-    <p v-if="feedback" class="scan-feedback" :class="{ 'copy-error': copyError }" role="status" aria-live="polite">{{ feedback }}</p>
+    <div class="scan-notices" role="status" aria-live="polite" aria-atomic="true">
+      <p class="scan-message">{{ message && message !== statusText ? message : '' }}</p>
+      <p class="scan-feedback" :class="{ 'copy-error': copyError }">{{ feedback }}</p>
+    </div>
     <div class="scan-account"><span>{{ loggedIn ? '协议账号已登录' : '协议账号尚未确认' }}</span><span>业务授权尚未完成</span></div>
     <p class="scan-note">关闭后继续等待，最长 5 分钟；重新打开会重新取码。新授权成功前保留原绑定。</p>
   </section>
@@ -101,32 +103,33 @@ async function copy(withInstructions: boolean) {
 
 <style scoped>
 .scan-auth{font:14px/1.6 'Segoe UI','Microsoft YaHei',sans-serif}
-.scan-auth .scan-paper{background:#fff;color:#182331;border-radius:6px;padding:10px 8px}
+.scan-auth .scan-paper{background:#fff;color:#182331;border-radius:6px;padding:6px 8px}
 .scan-auth .scan-intro{text-align:center}
 .scan-auth .scan-intro h3{font-size:12px;font-weight:600;margin:0}
 .scan-auth .scan-intro p{font-size:12px;color:#697586;margin:5px 0 0}
-.scan-qr{position:relative;width:320px;max-width:100%;aspect-ratio:1;margin:6px auto 0;background:white}
+.scan-qr{position:relative;width:320px;max-width:100%;aspect-ratio:1;margin:3px auto 0;background:white}
 .scan-qr img{display:block;width:100%;height:100%;object-fit:contain}
 .scan-placeholder,.scan-overlay{display:flex;align-items:center;justify-content:center;text-align:center;height:100%;padding:20px;font-size:13px;color:#526173}
 .scan-overlay{position:absolute;inset:0;background:#fffffff0;color:#8c4917;font-weight:600}
-.scan-number{text-align:center;margin:4px auto 0;font-size:13px}
-.scan-number strong{font-size:17px;font-weight:600;letter-spacing:1px;overflow-wrap:anywhere}
-.scan-instructions{box-sizing:border-box;width:320px;max-width:100%;margin:7px auto 0;padding-top:7px;border-top:1px dashed #ccd4de}
-.scan-instructions h4{margin:0 0 3px;font-size:10px;font-weight:600}
-.scan-instructions ol{margin:0;padding-left:14px;color:v-bind('instructionColors.normal');font-size:10px;line-height:1.55}
-.scan-instructions li{padding-left:1px;margin-bottom:2px;overflow-wrap:anywhere}
+.scan-number{text-align:center;margin:1px auto 0;font-size:13px;line-height:18px}
+.scan-number strong{font-size:13px;font-weight:500;letter-spacing:.5px;overflow-wrap:anywhere}
+.scan-instructions{box-sizing:border-box;width:320px;max-width:100%;margin:4px auto 0;padding-top:4px;border-top:1px dashed #ccd4de}
+.scan-instructions h4{margin:0 0 2px;font-size:10px;font-weight:600}
+.scan-instructions ol{margin:0;padding-left:14px;color:v-bind('instructionColors.normal');font-size:10px;line-height:1.45}
+.scan-instructions li{padding-left:1px;margin-bottom:1px;overflow-wrap:anywhere}
 .scan-instructions .important{color:v-bind('instructionColors.important')}
-.scan-status{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px;font-size:11px;margin-top:8px;color:var(--app-success)}
+.scan-status{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px;font-size:11px;margin-top:4px;color:var(--app-success)}
 .scan-status .attention{color:var(--app-warning)}
 .scan-status time{font-variant-numeric:tabular-nums;color:var(--app-ink)}
 .scan-auth .scan-status button{padding:0;background:transparent;border:0;color:var(--app-accent);font-size:11px}
-.scan-auth .scan-message{margin:8px 0 0;font-size:12px;overflow-wrap:anywhere;text-align:center}
-.scan-actions{display:flex;justify-content:center;flex-wrap:wrap;gap:6px;margin-top:8px}
-.scan-auth .scan-actions button{flex:none;padding:5px 8px;font-size:11px;background:var(--app-soft)}
+.scan-notices{box-sizing:border-box;margin-top:3px}
+.scan-auth .scan-notices>p{box-sizing:border-box;min-height:16px;margin:0;font-size:11px;line-height:16px;overflow:visible;overflow-wrap:anywhere;text-align:center}
+.scan-actions{display:flex;justify-content:center;flex-wrap:wrap;gap:6px;margin-top:4px}
+.scan-auth .scan-actions button{flex:none;padding:4px 8px;font-size:11px;background:var(--app-soft)}
 .scan-auth .scan-actions .scan-copy-full{background:var(--app-accent);border-color:var(--app-accent);color:var(--app-on-accent)}
 .scan-auth .scan-actions .scan-copy-full:hover:not(:disabled){background:var(--app-accent-hover)}
-.scan-auth .scan-feedback{font-size:12px;color:var(--app-success);margin:10px 0 0;overflow-wrap:anywhere}
+.scan-auth .scan-feedback{color:var(--app-success)}
 .scan-auth .copy-error{color:var(--app-warning)}
-.scan-account{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--app-muted);border-top:1px solid var(--app-line);margin-top:10px;padding-top:8px}
-.scan-auth .scan-note{font-size:11px;color:var(--app-muted);margin:4px 0 0}
+.scan-account{display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;font-size:11px;color:var(--app-muted);border-top:1px solid var(--app-line);margin-top:4px;padding-top:4px}
+.scan-auth .scan-note{font-size:10px;line-height:1.45;color:var(--app-muted);margin:3px 0 0}
 </style>
