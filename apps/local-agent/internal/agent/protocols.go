@@ -13,6 +13,11 @@ func (s *Service) EnableProtocols() error {
 	if e != nil {
 		return e
 	}
+	m.OnTaskLog = func(id int64, level, text string) {
+		if err := s.tasks.AppendLog(id, level, text); err != nil {
+			s.log.Warn("task log persistence failed")
+		}
+	}
 	s.protocols = m
 	return nil
 }

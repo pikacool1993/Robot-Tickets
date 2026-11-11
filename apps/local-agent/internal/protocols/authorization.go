@@ -34,6 +34,9 @@ func (m *Manager) Begin(taskID int64, k string) (Attempt, error) {
 		return Attempt{}, errors.New("请先启动协议服务")
 	}
 	if old := m.attempts[taskID]; old != nil && old.cancel != nil {
+		if !terminal(old.Status) {
+			m.taskLog(taskID, "info", "重新获取二维码，上一轮扫码已取消")
+		}
 		old.cancel()
 	}
 	b := make([]byte, 16)
@@ -43,6 +46,7 @@ func (m *Manager) Begin(taskID int64, k string) (Attempt, error) {
 	ctx, cancel := context.WithTimeout(m.workCtx, 5*time.Minute)
 	a := &Attempt{ID: hex.EncodeToString(b), TaskID: taskID, Protocol: k, Status: "creating", ExpiresAt: time.Now().Add(5 * time.Minute), cancel: cancel}
 	m.attempts[taskID] = a
+	m.taskLog(taskID, "info", "开始扫码授权")
 	out := *a
 	m.wg.Add(1)
 	go m.authorize(ctx, a)
@@ -65,6 +69,11 @@ func (m *Manager) updateAttempt(a *Attempt, status, message string) bool {
 	a.Status = status
 	a.Message = message
 	if terminal(status) {
+		level := "warning"
+		if status == "failed" {
+			level = "error"
+		}
+		m.taskLog(a.TaskID, level, map[string]string{"expired": "二维码已过期", "cancelled": "扫码已取消", "failed": "扫码授权失败，请重试", "timeout": "扫码授权超时"}[status])
 		a.Image = ""
 	}
 	return true
@@ -145,7 +154,9 @@ func (m *Manager) authorize(ctx context.Context, a *Attempt) {
 				}
 				a.Status = "failed"
 				a.Message = "账号绑定保存失败，原绑定已保留"
+				m.taskLog(a.TaskID, "error", a.Message)
 			} else {
+				m.taskLog(a.TaskID, "success", "扫码授权成功，协议账号已绑定；业务授权尚未接入")
 				a.Status = "confirmed"
 				a.Message = "协议账号已登录；业务授权尚未接入"
 			}
@@ -197,6 +208,16 @@ func (m *Manager) checkAccounts(ctx context.Context, k string) {
 	for id, b := range m.doc.Bindings {
 		if b.Protocol == k {
 			if state, ok := results[b.Account.Ref]; ok {
+				if b.Status != state {
+					text := map[string]string{"alive": "协议账号状态已恢复正常", "expired": "协议账号已失效，请重新扫码", "unknown": "暂时无法检查协议账号状态"}[state]
+					if text != "" {
+						level := "warning"
+						if state == "alive" {
+							level = "success"
+						}
+						m.taskLog(id, level, text)
+					}
+				}
 				b.Status = state
 				m.doc.Bindings[id] = b
 			}

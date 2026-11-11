@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"robot/apps/local-agent/internal/store"
@@ -34,8 +35,9 @@ type Catalog struct {
 	Tiers   []Tier `json:"tiers"`
 }
 type Log struct {
-	At   string `json:"at"`
-	Text string `json:"text"`
+	Level string `json:"level"`
+	At    string `json:"at"`
+	Text  string `json:"text"`
 }
 type Task struct {
 	WechatNickname string   `json:"wechatNickname,omitempty"`
@@ -48,6 +50,7 @@ type Task struct {
 	Selected       []string `json:"selected"`
 	SeatValid      bool     `json:"seatValid"`
 	Fingerprint    string   `json:"fingerprint"`
+	Logs           []Log    `json:"logs"`
 	Latest         *Log     `json:"latest"`
 }
 type document struct {
@@ -61,6 +64,7 @@ type View struct {
 	Tasks       []Task  `json:"tasks"`
 }
 type Service struct {
+	mu          sync.Mutex
 	db          *store.Store
 	doc         document
 	catalog     Catalog
@@ -68,7 +72,8 @@ type Service struct {
 	fingerprint string
 }
 
-// Caller serializes access and enforces the agent session for every operation.
+// Service serializes task mutations, including background protocol event logs.
+// The agent layer enforces the session for user operations.
 func New(root string, db *store.Store) (*Service, error) {
 	s := &Service{db: db, doc: document{NextID: 1, Tasks: []Task{}}, catalog: Catalog{Tiers: []Tier{}}}
 	data, err := db.Get("tasks.v1")
@@ -85,6 +90,19 @@ func New(root string, db *store.Store) (*Service, error) {
 				return nil, errors.New("本地任务编号数据无效")
 			}
 			seen[t.ID] = true
+		}
+		for i := range s.doc.Tasks {
+			t := &s.doc.Tasks[i]
+			if len(t.Logs) == 0 && t.Latest != nil {
+				t.Logs = []Log{*t.Latest}
+			}
+			if len(t.Logs) > 500 {
+				t.Logs = append([]Log{}, t.Logs[len(t.Logs)-500:]...)
+			}
+			if len(t.Logs) > 0 {
+				latest := t.Logs[len(t.Logs)-1]
+				t.Latest = &latest
+			}
 		}
 	}
 	file, err := os.Open(filepath.Join(root, "config", "seat-catalog.json"))
@@ -109,6 +127,7 @@ func New(root string, db *store.Store) (*Service, error) {
 		next := s.clone()
 		if next.Fingerprint != "" {
 			for i := range next.Tasks {
+				addLog(&next.Tasks[i], "warning", "座位目录已变化，请重新配置座位")
 				next.Tasks[i].SeatValid = false
 				next.Tasks[i].Selected = []string{}
 			}
@@ -162,6 +181,10 @@ func parseCatalog(data []byte) (Catalog, string, error) {
 func (s *Service) clone() document {
 	next := s.doc
 	next.Tasks = append([]Task{}, s.doc.Tasks...)
+	for i := range next.Tasks {
+		next.Tasks[i].Logs = append([]Log{}, next.Tasks[i].Logs...)
+		next.Tasks[i].Selected = append([]string{}, next.Tasks[i].Selected...)
+	}
 	return next
 }
 func (s *Service) commit(next document) error {
@@ -176,6 +199,8 @@ func (s *Service) commit(next document) error {
 	return nil
 }
 func (s *Service) Snapshot() View {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tasks := s.clone().Tasks
 	if tasks == nil {
 		tasks = []Task{}
@@ -183,6 +208,8 @@ func (s *Service) Snapshot() View {
 	return View{Catalog: s.catalog, ConfigError: s.configError, Tasks: tasks}
 }
 func (s *Service) Create() (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.doc.NextID >= 9007199254740991 {
 		return Task{}, errors.New("任务编号已达到上限")
 	}
@@ -197,6 +224,7 @@ func (s *Service) Create() (Task, error) {
 		}
 		t.SeatValid = len(t.Selected) > 0
 	}
+	addLog(&t, "success", "任务已创建")
 	next := s.clone()
 	next.NextID++
 	next.Tasks = append(next.Tasks, t)
@@ -206,12 +234,16 @@ func (s *Service) Create() (Task, error) {
 	return t, nil
 }
 func (s *Service) ResetIDs() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	next := s.clone()
 	next.Tasks = []Task{}
 	next.NextID = 1
 	return s.commit(next)
 }
 func (s *Service) SaveSeats(id int64, mode string, selected []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.configError != "" {
 		return errors.New(s.configError)
 	}
@@ -249,17 +281,48 @@ func (s *Service) SaveSeats(id int64, mode string, selected []string) error {
 			t.Selected = unique
 			t.SeatValid = len(unique) > 0
 			t.Fingerprint = s.fingerprint
-			t.Latest = &Log{At: time.Now().Format(time.RFC3339), Text: "已保存座位要求"}
+			label := "指定票类"
+			if mode == "area" {
+				label = "固定区域"
+			}
+			selection := strings.Join(unique, "、")
+			if selection == "" {
+				selection = "未配置"
+			}
+			addLog(t, "success", "已保存座位要求："+label+" · "+selection)
 			return s.commit(next)
 		}
 	}
 	return errors.New("任务不存在")
 }
 func (s *Service) Delete(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	next := s.clone()
 	for i, t := range next.Tasks {
 		if t.ID == id {
 			next.Tasks = append(next.Tasks[:i], next.Tasks[i+1:]...)
+			return s.commit(next)
+		}
+	}
+	return errors.New("任务不存在")
+}
+
+func addLog(t *Task, level, text string) {
+	entry := Log{At: time.Now().Format(time.RFC3339Nano), Level: level, Text: text}
+	t.Logs = append(t.Logs, entry)
+	if len(t.Logs) > 500 {
+		t.Logs = append([]Log{}, t.Logs[len(t.Logs)-500:]...)
+	}
+	t.Latest = &entry
+}
+func (s *Service) AppendLog(id int64, level, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.clone()
+	for i := range next.Tasks {
+		if next.Tasks[i].ID == id {
+			addLog(&next.Tasks[i], level, text)
 			return s.commit(next)
 		}
 	}

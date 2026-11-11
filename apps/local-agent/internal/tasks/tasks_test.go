@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -129,5 +130,78 @@ func TestTaskPersistenceAndCatalogChange(t *testing.T) {
 	}
 	if err = s.SaveSeats(first.ID, "tier", []string{"A"}); err == nil {
 		t.Fatal("accepted unavailable catalog")
+	}
+}
+
+func TestLogRetentionMigrationAndPersistence(t *testing.T) {
+	root := t.TempDir()
+	writeCatalog(t, root, fixture())
+	db, err := store.Open(filepath.Join(root, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	legacy := document{NextID: 2, Tasks: []Task{{ID: 1, Latest: &Log{At: "2026-11-11T01:00:00Z", Text: "旧日志"}}}}
+	raw, _ := json.Marshal(legacy)
+	if err = db.Put("tasks.v1", raw); err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(root, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := service.Snapshot().Tasks[0]; len(got.Logs) != 1 || got.Logs[0].Text != "旧日志" {
+		t.Fatal("legacy log lost")
+	}
+	for i := 0; i < 505; i++ {
+		if err = service.AppendLog(1, "info", fmt.Sprintf("事件 %d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := service.Snapshot()
+	got := snapshot.Tasks[0]
+	if len(got.Logs) != 500 || got.Logs[0].Text != "事件 5" || got.Latest.Text != "事件 504" {
+		t.Fatal("retention or latest incorrect")
+	}
+	snapshot.Tasks[0].Logs[0].Text = "external mutation"
+	if service.Snapshot().Tasks[0].Logs[0].Text != "事件 5" {
+		t.Fatal("snapshot aliases stored history")
+	}
+	service, err = New(root, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(service.Snapshot().Tasks[0].Logs) != 500 {
+		t.Fatal("history not persisted")
+	}
+	if err = service.Delete(1); err != nil {
+		t.Fatal(err)
+	}
+	service, err = New(root, db)
+	if err != nil || len(service.Snapshot().Tasks) != 0 {
+		t.Fatal("deleted history retained", err)
+	}
+}
+func TestLogWriteFailureDoesNotChangeMemory(t *testing.T) {
+	root := t.TempDir()
+	writeCatalog(t, root, fixture())
+	db, err := store.Open(filepath.Join(root, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(root, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if service.AppendLog(task.ID, "error", "should not commit") == nil {
+		t.Fatal("expected write failure")
+	}
+	if len(service.Snapshot().Tasks[0].Logs) != 1 {
+		t.Fatal("failed commit modified memory")
 	}
 }

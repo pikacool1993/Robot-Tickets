@@ -161,3 +161,25 @@ func main() {
 		fatal("桌面窗口启动失败，请检查 WebView2 是否正确安装")
 	}
 }
+
+func (a *App) CopyTaskLogs(id int64) error {
+	view, err := a.service.TaskView()
+	if err != nil {
+		return err
+	}
+	for _, task := range view.Tasks {
+		if task.ID == id {
+			text := fmt.Sprintf("任务 %d · 操作日志\r\n", id)
+			labels := map[string]string{"info": "普通", "success": "成功", "warning": "提醒", "error": "失败", "": "普通"}
+			for _, entry := range task.Logs {
+				at := entry.At
+				if t, e := time.Parse(time.RFC3339Nano, entry.At); e == nil {
+					at = t.Local().Format("2006-01-02 15:04:05")
+				}
+				text += fmt.Sprintf("%s [%s] %s\r\n", at, labels[entry.Level], entry.Text)
+			}
+			return wruntime.ClipboardSetText(a.ctx, text)
+		}
+	}
+	return fmt.Errorf("任务不存在")
+}

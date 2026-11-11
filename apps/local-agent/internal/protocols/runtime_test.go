@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 		mux.HandleFunc("/qr/", func(w http.ResponseWriter, r *http.Request) {
 			data := any(map[string]string{"status": "authorized"})
 			if r.URL.Path[len(r.URL.Path)-7:] == "confirm" {
-				data = map[string]any{"id": 12, "nickname": "测试账号"}
+				data = map[string]any{"openid": "12", "nickname": "测试账号"}
 			}
 			json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": data})
 		})

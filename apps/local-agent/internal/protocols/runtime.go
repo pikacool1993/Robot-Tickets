@@ -60,6 +60,7 @@ type persisted struct {
 	Bindings map[int64]Binding
 }
 type Manager struct {
+	OnTaskLog      func(int64, string, string)
 	mu             sync.Mutex
 	control        sync.Mutex
 	root, instance string
@@ -397,6 +398,9 @@ func (m *Manager) stop(k string) error {
 	r := m.doc.Runtime[k]
 	for id, b := range m.doc.Bindings {
 		if b.Protocol == k {
+			if !b.Paused {
+				m.taskLog(id, "warning", "协议服务关闭或重启，任务已暂停")
+			}
 			b.Paused = true
 			b.Status = "unknown"
 			m.doc.Bindings[id] = b
@@ -593,4 +597,11 @@ func (m *Manager) accountLock(k, ref string) *sync.Mutex {
 		m.accountLocks[key] = &sync.Mutex{}
 	}
 	return m.accountLocks[key]
+}
+
+// The sink must not call back into Manager. Installed before starting any workers.
+func (m *Manager) taskLog(id int64, level, text string) {
+	if m.OnTaskLog != nil {
+		m.OnTaskLog(id, level, text)
+	}
 }

@@ -1,0 +1,1967 @@
+# Robot 工程文档
+
+整理日期：2026-11-11。工程说明统一维护在本文，原分散文档及跳转索引已合并。源码、Swagger 和运行配置继续保留在原目录。
+
+## 阅读导航
+
+- [运行、部署与交付](#operations)
+  - [cloud-server 运行与功能说明](#cloud-server)
+  - [Docker 日常操作速查](#docker)
+  - [管理端前端开发](#admin-dev)
+  - [Windows 客户端构建与使用](#local-agent)
+  - [微信协议独立编译](#wechat-build)
+- [客户端任务与协议接入](#client)
+  - [协议接入行为与验收](#protocol-behavior)
+  - [协议适配模型与流程](#protocol-flow)
+  - [任务模块需求与实现方案](#tasks)
+- [配置格式与接口参考](#interfaces)
+  - [客户端 cfg 配置文件协议](#cfg)
+  - [微信与 YYB 协议服务 API](#protocol-api)
+  - [Football 蓉城业务接口](#football)
+- [架构与历史设计](#design)
+  - [项目初始架构与准备方案](#architecture)
+  - [云端登录授权设计](#auth-design)
+  - [Web 管理端设计](#web-design)
+
+## 当前约定与维护规则
+
+- 当前运行与交付操作优先查看“运行、部署与交付”；设计章节保留历史需求，不能作为功能已实现的证明。
+- 云端数据库使用 MySQL 8.0；管理员 API 使用普通 JSON 与 Bearer Token，代理商 API 使用 AES-GCM 信封。客户端已支持 cfg 导入。
+- 微信 / YYB 已接入扫码授权、账号绑定及维护；业务授权、观演人获取和购票执行尚未接入。
+- 命令按各节指定目录执行。本文中的源码路径以仓库根目录为基准，命令块及目录布局内的相对路径遵循对应模块约定。
+- 更新功能时直接修改对应章节，同时核对接口、命令和实现状态，避免新增同主题副本文档。
+
+<a id="operations"></a>
+
+## 运行、部署与交付
+
+<a id="cloud-server"></a>
+
+### cloud-server 运行与功能说明
+
+> 以下命令默认在 `apps/cloud-server` 目录执行。
+
+#### 代理商详情与已登录终端
+
+详情中的事件通过代理商名称旁的“查看事件”按钮打开弹窗，点击后才加载记录；支持加载提示、空状态、失败重试和关闭操作。
+
+管理控制台支持手机、平板和桌面屏幕：窄屏采用顶部导航，720px 及以下将代理商、终端和事件表格转换为带字段标签的卡片。登录、创建/编辑、凭据查看及确认弹窗均适配小屏，弹窗内容可独立滚动，打开时禁止背景页面滚动。
+
+代理商列表显示有效登录设备数 / 设备上限，详情显示创建时间及已登录终端列表（客户端编号、实例 ID、登录时间、登录 IP、会话到期时间）。统计与终端列表统一按账号已启用、会话未撤销且未过期计算，不代表终端实时联网状态。正常退出、禁用账号、密码重置或会话到期后，相关会话不再计入。
+
+Web 列表及详情每 60 秒自动刷新，并显示倒计时；两处均提供手动刷新入口，手动刷新后重新计时；页面隐藏时暂停轮询。刷新失败保留上次数据并提示，避免把请求失败显示为零设备。详情 API `GET /api/admin/v1/agents/{id}` 返回 `created_at`、`active_devices` 和 `devices`；设备记录不返回令牌或令牌哈希。异常关机或断网且未成功登出时，会话可能继续占用名额直到撤销或到期。
+
+#### Go 密钥生成工具
+
+在 `apps/cloud-server` 目录执行：
+
+```powershell
+go run ./cmd/generate-keys
+```
+
+生成接口通信 AES 密钥与独立的数据库凭据加密密钥，输出可填入 `.env` 的 `TRANSPORT_KEYS_JSON`、`AGENT_TRANSPORT_KEY_ID`、`AGENT_CREDENTIAL_ENCRYPTION_KEY`、`AGENT_CREDENTIAL_KEY_VERSION`。此命令替代原 `scripts/generate_keys.py`，不再需要 Python。
+
+`.cfg` 文件包装加密密钥与签名密钥仍使用 `go run ./cmd/config-keys` 生成。两个命令只生成密钥配置，不修改 `.env`，不直接生成 `.cfg` 文件；文件由 Web 后台导出。输出包含秘密，应安全保存。初始化后不要随意替换已有密钥，尤其数据库凭据密钥，否则历史密码将无法解密。
+
+#### 客户端通信配置导出（.cfg）
+
+后台代理商列表提供“导出客户端配置”。服务端以 AES-256-GCM 加密 JSON 配置，并使用 Ed25519 签名，管理员确认后下载 `.cfg` 二进制文件。需要先配置 `.env.example` 中的五个 `CLIENT_CONFIG_*` 变量；全部为空时该功能不可用，其余服务正常运行。
+
+在本目录执行 `go run ./cmd/config-keys` 生成独立密钥和客户端验签公钥，并安全保存输出。将 `CLIENT_CONFIG_SERVER_URL` 改为客户实际可访问的服务根地址；随后重启服务或重建 Compose。签名私钥种子仅保存在服务端，客户端需要文件加密密钥和验签公钥。完整格式、密钥管理及导入规则见 [客户端配置文件协议](#cfg)。
+
+本版导出部署级共享通信配置，不包含代理商凭据，不替代账号登录。
+
+#### 使用 Docker Compose 本地运行
+
+如果本机已安装 Docker Desktop，推荐使用 Compose 同时启动 MySQL 和 `cloud-server`。`cloud-server` 镜像会在一次构建中编译 `admin-web` 前端和 Go 服务端，由同一个容器提供管理页面与 API。
+
+##### 1. 创建环境文件
+
+在 `E:\Robot\apps\cloud-server` 目录执行：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+编辑 `.env`，至少修改 `MYSQL_ROOT_PASSWORD`、`MYSQL_APP_PASSWORD` 和 `ADMIN_BOOTSTRAP_PASSWORD`。AES 密钥可以用 PowerShell 生成：
+
+```powershell
+function New-AesKey { $buf = [byte[]]::new(32); [Security.Cryptography.RandomNumberGenerator]::Fill($buf); [Convert]::ToBase64String($buf) }
+$clientKey = New-AesKey
+$credentialKey = New-AesKey
+```
+
+把生成的两个值分别填入 `.env` 的 `TRANSPORT_KEYS_JSON`（仅 `client-v1`）以及 `AGENT_CREDENTIAL_ENCRYPTION_KEY`。管理员后台接口使用普通 JSON，不再需要管理员传输密钥。不要提交 `.env`。
+
+##### 2. 启动
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml up --build -d
+```
+
+MySQL 会先自动创建数据库和业务账号；MySQL 健康检查通过后，`cloud-server` 自动执行表迁移并启动。浏览器访问 `http://localhost:8080` 使用管理后台，API 位于同一源的 `/api/` 下。另开窗口检查：
+
+```powershell
+Invoke-WebRequest http://localhost:8080/healthz -Method Get
+```
+
+##### 3. 停止和清理
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml down
+```
+
+保留 MySQL 数据。如果需要清空本地数据库并重新初始化：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml down -v
+```
+
+Compose 初始化账号和数据库只在 MySQL 数据卷为空时执行。修改 `.env` 中的数据库密码后，如需让新密码生效，应先执行 `down -v` 再重新启动。
+
+#### 本机直接运行（Windows / PowerShell）
+
+##### 1. 创建 MySQL 数据库和账号
+
+先用有权限的 MySQL 管理账号执行一次（替换密码）：
+
+```sql
+CREATE DATABASE robot CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE USER 'robot_app'@'127.0.0.1' IDENTIFIED BY '替换为强密码';
+GRANT ALL PRIVILEGES ON robot.* TO 'robot_app'@'127.0.0.1';
+FLUSH PRIVILEGES;
+```
+
+##### 2. 生成本地密钥
+
+在 PowerShell 中生成 32 字节 AES 密钥的 Base64 值：
+
+```powershell
+$newAesKey = { $buf = [byte[]]::new(32); [Security.Cryptography.RandomNumberGenerator]::Fill($buf); [Convert]::ToBase64String($buf) }
+$agentTransportKey = & $newAesKey
+$credentialEncryptionKey = & $newAesKey
+```
+
+这些值只用于本地开发；不要提交到 Git、聊天记录或日志。
+
+##### 3. 配置并启动
+
+在 `E:\Robot\apps\cloud-server` 目录执行：
+
+```powershell
+$env:MYSQL_DSN = 'robot_app:替换为强密码@tcp(127.0.0.1:3306)/robot?parseTime=true&charset=utf8mb4'
+$env:ADMIN_BOOTSTRAP_USERNAME = 'admin'
+$env:ADMIN_BOOTSTRAP_PASSWORD = '替换为强管理员密码'
+$env:TRANSPORT_KEYS_JSON = "{`"client-v1`":`"$agentTransportKey`"}"
+$env:AGENT_TRANSPORT_KEY_ID = 'client-v1'
+$env:AGENT_CREDENTIAL_ENCRYPTION_KEY = $credentialEncryptionKey
+$env:AGENT_CREDENTIAL_KEY_VERSION = 'v1'
+$env:LISTEN_ADDR = ':8080'
+
+go run ./cmd/server
+```
+
+首次启动会自动创建数据表，并在管理员表为空时创建环境变量指定的管理员。后续启动不会覆盖管理员密码。迁移文件路径相对当前工作目录解析，因此请从 `apps/cloud-server` 目录启动。
+
+##### 4. 检查服务
+
+另开一个 PowerShell 窗口执行：
+
+```powershell
+Invoke-WebRequest http://localhost:8080/healthz -Method Get
+```
+
+成功时返回 HTTP `204 No Content`。`/healthz` 是不含业务数据的明文基础设施端点；代理商 API 使用 `client-v1` 的 AES-GCM JSON 信封，管理员 API 使用普通 JSON。管理页面由 Go 服务端托管，不需要额外的 Web 容器或 Nginx。
+
+##### 5. 测试与构建
+
+```powershell
+go test ./...
+go build ./cmd/server
+```
+
+<a id="docker"></a>
+
+### Docker 日常操作速查
+
+> 以下命令默认在 `apps/cloud-server` 目录执行。
+
+以下命令均在目录 `E:\Robot\apps\cloud-server` 下执行。
+
+#### 进入工程目录
+
+```powershell
+cd E:\Robot\apps\cloud-server
+```
+
+#### 首次启动
+
+首次运行或修改了代码、Dockerfile、依赖、`.env`、Compose 配置时使用：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml up --build -d
+```
+
+说明：
+
+- `--build`：重新构建 `cloud-server` 镜像。
+- `-d`：后台运行。
+- `cloud-server` 镜像会在一次构建中编译 `admin-web` 和 Go 服务端；浏览器访问 `http://localhost:8080` 打开管理员后台。
+- MySQL 第一次启动时自动创建数据库和业务账号。
+- `cloud-server` 会等待 MySQL 健康检查通过后启动。
+- 服务启动时自动创建授权模块数据表。
+
+#### 前台启动并查看实时日志
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml up --build
+```
+
+按 `Ctrl+C` 停止前台运行。
+
+#### 已创建容器的启动
+
+如果容器已经创建过，只是被停止，可以使用：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml start
+```
+
+`start` 不会重新构建镜像，也不会应用新的代码、`.env` 或 Compose 配置。
+
+#### 停止服务
+
+停止容器但保留容器和 MySQL 数据：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml stop
+```
+
+停止并删除容器，但保留 MySQL 数据卷：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml down
+```
+
+#### 重启服务
+
+普通重启：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml restart
+```
+
+修改代码或环境变量后重新构建并启动：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml up --build -d
+```
+
+#### 查看状态
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml ps
+```
+
+#### 查看日志
+
+查看所有服务日志：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml logs
+```
+
+持续查看 `cloud-server` 日志：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml logs -f cloud-server
+```
+
+持续查看 MySQL 日志：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml logs -f mysql
+```
+
+#### 检查服务
+
+```powershell
+Invoke-WebRequest http://localhost:8080/healthz -Method Get
+```
+
+正常时返回 HTTP `204 No Content`。
+
+#### 重新构建服务镜像
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml build --no-cache cloud-server
+docker compose --env-file .env -f docker-compose.dev.yml up -d
+```
+
+#### 清空本地数据库并重新初始化
+
+警告：下面命令会删除 Docker volume 中的 MySQL 数据，包括管理员账号、代理商账号、会话和审计日志。
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml down -v
+docker compose --env-file .env -f docker-compose.dev.yml up --build -d
+```
+
+#### 查看容器内部环境和文件
+
+进入 `cloud-server` 容器：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml exec cloud-server sh
+```
+
+进入 MySQL 容器：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml exec mysql mysql -uroot -p robot
+```
+
+#### 常见判断
+
+如果执行 `start` 报容器不存在，改用：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml up --build -d
+```
+
+如果修改 `.env` 后配置没有生效，执行：
+
+```powershell
+docker compose --env-file .env -f docker-compose.dev.yml up --build -d --force-recreate
+```
+
+<a id="admin-dev"></a>
+
+### 管理端前端开发
+
+> 以下命令默认在 `apps/cloud-server/admin-web` 目录执行。原运行时传输密钥说明已过时，管理员 API 使用普通 JSON。
+
+`cloud-server` 的管理员后台 Web 应用，使用 Vue 3、TypeScript 和 Vite。
+
+#### 本地开发
+
+在 `apps/cloud-server/admin-web` 目录执行。若 PowerShell 提示找不到 `pnpm`，先启用 Node 自带的 Corepack：
+
+```powershell
+corepack enable
+corepack prepare pnpm@11.25.0 --activate
+Copy-Item public/runtime-config.example.js public/runtime-config.js
+pnpm install --ignore-scripts
+pnpm dev
+```
+
+Vite 将 `/api` 请求代理到 `http://localhost:8080`。生产构建使用 `pnpm build`；Docker 构建会将前端静态文件打入 `cloud-server` 镜像，由 Go 服务端提供页面和 API。
+
+管理员接口使用普通 JSON 与 Bearer Token，不向浏览器注入传输密钥。
+
+<a id="local-agent"></a>
+
+### Windows 客户端构建与使用
+
+#### 任务操作日志
+
+- 每项任务保留最近 500 条操作日志，超出自动清理最早记录；随任务 DPAPI 加密保存，重启保留，删除任务时同时删除日志。旧版单条最新日志自动兼容。
+- 卡片显示最新一条时间与多行摘要，限制在固定卡片高度内，超长省略、悬停查看全文；点击或键盘激活打开历史弹窗。
+- 历史按新到旧展示完整日期时间、普通/成功/提醒/失败和完整内容。复制按钮复制当前保留的全部日志，按时间从早到晚排列；不提供清空与文件导出。
+- 弹窗在顶部时随轮询更新；阅读旧记录时保留滚动位置并提示新日志。
+- 记录创建、座位保存、扫码开始与最终结果、账号状态变化、协议关闭引起的暂停及删除失败。正常心跳与扫码轮询不逐条记录；日志不保存账号凭据或原始接口错误体。
+- 日志落盘失败时不伪造成功记录；存储故障写入客户端运行日志，配置操作仍显示原保存错误。
+
+
+> 以下相对路径默认以 `apps/local-agent` 为基准。
+
+Windows 10/11 x64 桌面客户端。采用 Wails v2.17.1、Go 1.26、Vue 3、TypeScript、Vite、SQLite（纯 Go 驱动）、Windows DPAPI 和 slog。已实现登录、任务工作台、座位配置，以及微信 / YYB 第一期扫码与账号维护接入。登录前确认所选协议的代理，留空直连，协议就绪后才请求云端登录。观演人获取、业务授权及购票执行尚未接入，不模拟成功。
+
+协议接入的当前行为、进程生命周期、Redis 依赖和验收范围见 [协议接入第一版](#protocol-behavior)。构建会同步编译两套协议并复制必要运行资源；微信需要额外准备 Redis，并启用持久化。退出客户端保留协议进程，仅停止客户端账号维护。原有章节中涉及“协议尚未接入”的说明以此文档为准。
+
+#### 构建与运行
+
+需要 Windows x64、Go 1.26+、Node.js（建议与服务端前端一致使用 Node 24）、pnpm 11 和 Microsoft Edge WebView2 Runtime。普通 Go 构建即可生成生产桌面程序，不需要 C 编译器；Wails CLI 为开发模式可选工具。
+
+##### 首次打包 EXE
+
+先关闭正在运行的客户端，避免输出的 EXE 被占用。在 PowerShell 中执行：
+
+```powershell
+cd E:\Robot\apps\local-agent
+
+# 交付构建：从已配置的服务端环境文件提取文件解密密钥、派生验签公钥。
+.\build.ps1 -ServerEnv ..\cloud-server\.env
+```
+
+脚本自动安装前端依赖、执行 TypeScript 类型检查、构建 Vue 页面，再编译 Windows x64 桌面 EXE。输出位置为 `E:\Robot\apps\local-agent\build\bin\Robot.exe`。这一步只生成程序，不会自动导出或复制 `bootstrap.cfg`，也不会自动生成交付压缩包。
+
+##### 修改代码后重新打包
+
+首次准备过可信密钥且密钥未变时，关闭客户端，然后执行：
+
+```powershell
+cd E:\Robot\apps\local-agent
+.\build.ps1
+```
+
+如果服务端的 `.cfg` 文件加密密钥或签名密钥变更，重新执行首次打包命令，更新客户端内置的解密密钥与验签公钥。
+
+仅预览界面、尚未准备可信密钥时可以执行 `./build.ps1 -Preview`，但生成的程序不能导入正式 `.cfg`。`-Preview` 只跳过可信密钥文件存在检查；若之前已准备过密钥，仍会嵌入现有密钥。
+
+也可以先执行 `go run ./cmd/prepare-trust -env ../cloud-server/.env`，再执行 `./build.ps1`。该命令不会改变服务端配置，不输出密钥，不将签名私钥写入客户端；生成的 `internal/trust/assets/local.json` 已被 Git 忽略。密钥轮换时保留此文件中的旧 key ID，重新构建客户端。
+
+##### 测试与交付
+
+程序位于 `build/bin/Robot.exe`。从 Web 后台导出 `bootstrap.cfg`，放到 `build/bin/config/bootstrap.cfg`，然后双击 EXE。
+
+测试时确保 cloud-server 已运行，且配置中的地址能够访问。客户端导入配置后，填写代理商用户名、密码和客户端编号登录，进入任务工作台。客户电脑无需安装 Go、Node.js 或 pnpm；需要 Windows 10/11 x64 和 WebView2 Runtime。微信协议还需要可连接的 Redis，并启用持久化。
+
+```text
+Robot/
+  Robot.exe
+  protocols/                # 两套协议的 EXE、配置及必要运行资源
+  config/
+    bootstrap.cfg
+    seat-catalog.json
+```
+
+交付时复制 EXE、config 和 protocols 文件夹，不交付已运行产生的 `data` 文件夹。为避免误交付，构建脚本不会自动把测试数据打包成压缩包。复制未运行的原始软件包到不同文件夹即可多开。同一目录重复双击激活已有窗口。不要放到没有写权限的 Program Files 目录。移动同一软件目录可以保留实例 ID；复制使用过的目录不属于当前支持的多开方式。
+
+若没有配置服务端的五个 `CLIENT_CONFIG_*` 变量，需先按 [cloud-server 运行说明](#cloud-server) 配置；客户端不会生成或替换生产密钥。
+
+#### 登录模块行为
+
+- 首次自动读取随包 `config/bootstrap.cfg`，先验签、再解密；无文件或失败时显示手动选择入口。
+- 通信配置保存后不依赖原始 cfg 文件；登录页可重新导入。重新导入会清除旧的记住登录信息，已登录时需先退出。
+- 本地数据位于 EXE 同目录 `data`，SQLite 中的配置及记住的表单整体使用 DPAPI CurrentUser 加密。更换 Windows 用户或电脑后可能需要重新导入并填写密码。
+- 首次默认不记住登录信息。成功登录后才保存记住偏好；取消勾选并成功登录会删除已保存表单。关闭、下次启动始终返回登录页，不自动登录。
+- 令牌仅在 Go 内存中保存，不发送到 Vue 或写入数据库。网络请求由 Go 发起，接口使用现有 AES-GCM 信封。
+- 同一实例重新登录复用设备名额。编号每次可修改、全局唯一，新编号登录成功才释放旧编号。
+- 会话有效期以服务端响应为准。每秒检查到期，每 30 秒在线检查授权；网络检查失败显示连接中断，401 返回登录页。暂时断网不会直接注销，但到期仍强制返回登录页。请求最长 15 秒，到期时验证请求使用到期截止时间。
+- 点击 × 必须确认，取消继续运行，确认退出后尽力在两秒内撤销会话并关闭客户端；协议进程继续运行，客户端扫码与维护停止。若撤销失败，原云端会话按服务器规则过期，同一实例下次登录替换旧会话。
+- 日志位于 `data/logs`，只记录必要事件，不记录密码、密钥、配置内容或令牌。当前按启动日期选择日志文件，尚无日志保留清理策略。
+
+#### 模块结构
+
+任务按客户端实例共享，切换代理商后仍显示原任务。微信或 YYB 授权协议在代理商登录时选择一次，按客户端实例保存，之后任务授权统一使用该协议；切换协议需退出后重新登录。协议不随代理商账号切换或通信配置重导而清除，记住登录信息开关不影响协议保存。协议仅在登录成功后更新，首次使用必须明确选择。任务编号单调递增，删除不复用。任务数据（包括编号序列和最新操作日志）整体通过 DPAPI 保护，存入同一 SQLite settings 记录，以单次原子提交同时保存序列与任务。
+
+启动时读取 `config/seat-catalog.json`（开发时相对于 `ROBOT_AGENT_ROOT`）。构建时仅为缺少目录文件的新软件包复制源配置；已有 `build/bin/config/seat-catalog.json` 不会被覆盖，更新需显式替换。目录包含票类、价格、看台及可售状态；无效文件显示错误，不覆盖有效任务数据。目录规范化后计算 SHA-256，忽略格式、字段顺序及选项排列变化；有效内容变化后重启，全部已有座位选择失效，需重新选择。无变化重启保留配置。新建默认选 A/B/C/D/E；模式切换按票类归属双向转换；不可售区域不参与选择。
+
+任务行固定高度，座位摘要单行省略，悬停查看全文，点击打开弹窗。看台选项固定两行，编号及特殊说明位于第一行，票类和价格在第二行，长说明省略并提供悬停详情。保存失败会保留弹窗修改并提供重试或放弃，最新保存日志落盘后重启继续显示。窗口支持缩小到 360px 宽。扫码授权与账号维护已接入；登录时先确认所选协议的可选代理，再启动协议并请求云端登录。
+
+| 模块 | 职责 |
+| --- | --- |
+| main.go | Wails 窗口、原生文件对话框、目录单实例、退出确认、Vue 绑定 |
+| internal/agent | 启动导入、登录流程、偏好保存、会话监控 |
+| internal/cloud | HTTP 客户端、超时、AES-GCM 信封、业务错误映射 |
+| internal/store | SQLite 数据及实例身份 |
+| internal/tasks | 座位目录校验与指纹、永久任务编号、任务持久化和座位规则 |
+| internal/secure | DPAPI CurrentUser 保护 |
+| internal/trust | 编译时内置的文件解密密钥和可信验签公钥表 |
+| frontend | 登录、配置导入与最小主界面 |
+
+复用 `cloud-server/pkg/clientprotocol` 的公开协议 API，通过本地 Go module replace 引用，服务端与客户端仍独立构建，不需要将云端可执行程序打包到客户端。
+
+#### 开发与验证
+
+```powershell
+# 先构建前端，供 go:embed 使用
+cd frontend
+pnpm install --frozen-lockfile
+pnpm build
+cd ..
+go test ./...
+go vet ./...
+
+# 可选热更新开发（首次安装 CLI）
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1
+$env:ROBOT_AGENT_ROOT = (Get-Location).Path
+wails dev
+```
+
+`ROBOT_AGENT_ROOT` 仅用于开发时显式指定实例数据根目录，正常交付不设置。前端开发服务器本身不具备桌面绑定，需通过 Wails 开发窗口打开。
+
+必须同步重启/部署更新后的 cloud-server，以创建编号绑定表及全局事务锁表。原有活跃会话迁移到编号绑定表；无法关联实例的历史编号保留其原代理商归属。新登录改号会删除旧编号关联的历史会话以满足原表外键，然后释放旧编号；审计历史保留。新版本仍使用已有 7 天会话。
+
+测试使用独立临时 SQLite、当前 Windows 用户的真实 DPAPI，以及本地加密测试 HTTP 服务，不访问生产账号。真实部署登录、Windows 10 目标机器兼容性和多实例规模性能需在对应环境验收。任务读写均在 Go 层检查登录及会话到期；注销/到期后退出工作台，本地任务保留。协议进程独立运行，注销停止扫码与维护但不关闭协议进程；购票执行尚未接入。
+
+<a id="wechat-build"></a>
+
+### 微信协议独立编译
+
+> 以下命令在 `protocol-services/wechat` 目录执行；这是原工程的 CMD 命令，PowerShell 交付构建优先使用客户端 build.ps1。
+
+set CGO_ENABLED=0
+set GOOS=linux
+set GOARCH=amd64
+go build -tags linux -o staydd main.go
+
+### 生成 swagger
+bee generate docs
+
+###### windows 编译 go env -w
+set CGO_ENABLED=0
+set GOOS=windows 
+set GOARCH=amd64
+go build -tags windows -o wechat_win.exe main.go
+
+go build -o main.exe main.go
+
+### 生成 swagger
+bee generate docs
+
+<a id="client"></a>
+
+## 客户端任务与协议接入
+
+<a id="protocol-behavior"></a>
+
+### 协议接入行为与验收
+
+> 记录首版接入行为及边界。
+
+本版实现微信 / YYB 的扫码授权、账号检查与维护，不包含目标小程序业务登录、观演人获取及购票执行。
+
+#### 登录顺序
+
+登录页填写代理商信息并选择协议 → 点击登录 → 弹出所选协议的代理配置 → 确认并登录 → 启动或连接该协议 → 健康检查成功 → 请求云端登录接口 → 进入任务工作台。
+
+每次登录均确认代理。留空明确表示直连；两套协议各自保存配置。支持带认证的 `http://user:password@host:port` 和无认证 `socks5://host:port`。代理变更且本实例协议已在运行时，必须确认重启后才能继续登录；取消弹窗不启动协议、不请求云端。云端登录失败时，已启动的协议服务保留运行。
+
+只有当前选择的协议会自动启动。另一套后台服务不被主动关闭。主页面提供当前协议的启动、关闭、重启操作；关闭和重启先展示受影响任务并确认，取消扫码及维护请求，已绑定任务置为暂停，服务恢复后重新检查账号。本版没有业务任务执行器，暂停标记用于保留后续执行语义。
+
+YYB 保留源码原有的本地网页控制后台：协议启动后直接在浏览器访问 `http://127.0.0.1:8088/`，无需从客户端打开、票据跳转或浏览器授权会话。首页、扫码页及其账号接口均可直接使用，账号列表保留换行布局。完整首页及扫码页嵌入 YYB EXE，运行数据目录没有模板时仍显示完整控制台。只有 `/robot/` 内部控制接口校验客户端令牌。YYB 固定使用 8088；端口被占用时提示处理，不自动切换端口，也不复用历史随机端口。
+
+#### 实例与进程
+
+- YYB 固定端口 8088，被占用时启动失败并提示，不复用历史随机端口；若当前实例仍运行在旧随机端口，下次启动或登录时迁移至 8088。微信默认 8062，保留原有空闲端口回退策略。均不接管未知的监听服务。
+- Windows 子进程隐藏启动、独立进程组；退出客户端只结束客户端会话与维护，不杀协议进程。
+- 持久化进程 PID、创建时间、端口及控制凭据。重连校验实例 ID、协议类型和 PID；停止时还校验进程创建时间与可执行文件路径，避免 PID 复用造成误杀。
+- 客户端管理模式下，两套服务仅监听回环地址。微信接口及 YYB 的 `/robot/` 内部控制接口要求实例令牌；YYB 原生网页后台和原有 API 保持直接访问。令牌通过子进程环境传入，不放在命令行。
+- 每 15 秒检查当前服务，连续异常最多自动启动 3 次；连续失败后提示手动启动。用户手动关闭后，本次运行期间不自动拉起，下次明确登录会重新启动。
+- 协议升级须先通过客户端关闭对应服务，更新 EXE 后再启动。
+
+#### 授权与账号
+
+- `internal/protocols.Protocol` 定义扫码、轮询、维护、账号退出能力；两个 HTTP 适配器各自处理业务码、会话字段和确认流程。YYB 扫码完成后额外调用 confirm。
+- 每次扫码有独立操作 ID 和五分钟截止时间，包含取码耗时。关闭弹窗仍继续等待；重新打开或重新获取会取消旧操作，重新取码并计时。二维码自身提前失效时显示过期。
+- 新扫码确认并持久化成功后替换任务绑定。取消、失败、过期和超时均保留原绑定。旧操作的迟到响应不能覆盖新操作。
+- 任务与协议账号在当前客户端实例中跨代理商共享；不做重复账号拦截。账号明确失效只更新提示，不额外阻止业务请求。
+- 去重维护同一协议下的同一账号，并串行执行维护和退出操作。登录期间定时维护；注销、到期、退出客户端后停止，重新登录后重新检查。默认每分钟维护一轮，此值是第一版运行默认值。
+- 微信返回的通用 -8 码包含网络、解包等多种原因，显示暂时无法检查；已确认账号不存在或明确会话失效才提示重新授权。
+- 删除任务会先请求对应协议退出/删除账号，成功后清理绑定并删除任务；退出失败保留任务供重试。若多个任务使用同一账号，退出可能影响其他任务，由用户自行筛查。
+- 界面分别显示“协议账号已登录”和“业务授权尚未接入”，不伪造业务授权成功。微信要求额外验证时提示人工完成；本版不自动处理验证码。
+
+#### 数据与依赖
+
+```text
+Robot.exe
+protocols/
+  yyb/yyb-go.exe
+  wechat/wechat_win.exe
+  wechat/conf/app.conf
+  wechat/lib/...
+data/
+  agent.db
+  protocols/yyb/...
+```
+
+代理配置、进程控制令牌、任务账号引用使用现有 DPAPI settings 存储。YYB 原生账号凭据仍保存在其 SQLite 中；微信仍需要外部 Redis，地址、密码、库号由 `protocols/wechat/conf/app.conf` 配置，须启用 Redis 持久化才能在 Redis 重启后保留登录态。Redis key 在客户端管理模式下以实例 ID 隔离。微信 DLL、lib/key 和 .dat 为必要运行资源。不要交付运行过的 data 目录或含真实账号数据的 Redis 备份。
+
+微信托管模式禁用源码自带的自动心跳恢复，心跳由客户端触发；启动时指定的代理覆盖旧账号中保存的代理信息。YYB 同时为 HTTP 及 TCP 请求设置代理。原有 YYB TCP 代理失败回退直连策略暂未改变，代理留空的直连行为与该回退策略是独立规则。
+
+#### 构建与验证
+
+`apps/local-agent/build.ps1` 构建前端、两套协议及桌面 EXE，将运行资源放入 `build/bin/protocols`。已有微信 conf 不覆盖；账号运行数据不复制。发布时应更新整个软件包。
+
+当现有客户端或协议正在运行时，可使用 `-OutputDir build/console-fix` 生成独立更新包，避免覆盖运行中的程序。更新原目录前先从客户端关闭 YYB，再退出客户端；复制更新后的 `Robot.exe` 和 `protocols/yyb/yyb-go.exe`，保留原有 `data`、`config` 和微信配置。
+
+自动化测试使用本机模拟协议服务验证退出客户端后进程保留、重连复用、账号绑定持久化、重复扫码不清除旧绑定、删除任务退出账号、代理变化确认、进程身份检查、协议差异映射及先启动协议再请求云端登录的顺序。真实微信 / YYB 扫码、额外验证和长期保活仍需用实际账号验收。
+
+<a id="protocol-flow"></a>
+
+### 协议适配模型与流程
+
+> 记录字段映射及源码索引。
+
+> 范围：说明 local-agent 如何将微信和 YYB 两套协议适配到统一任务模型。具体请求、字段和错误码见 [微信与YYB协议服务API参考](#protocol-api)。  
+> 更新日期：2026-11-08。
+
+#### 接入结构
+
+微信和 YYB 的 HTTP API 不同：微信以 `wxid` 标识账号，使用 `Success` 和微信协议业务码；YYB 以 `openid` 标识账号，使用 `{code,msg,data}`，并在扫码授权后额外执行 `/confirm`。local-agent 把这些差异留在各自 adapter 中，授权工作流和任务视图只使用统一结构。
+
+```text
+Task / Authorization workflow
+             |
+       Protocol interface
+         /          \
+ WeChat adapter    YYB adapter
+      |                 |
+ local WeChat       YYB Go service
+```
+
+核心结构定义在 `apps/local-agent/internal/protocols/adapter.go` 和 `runtime.go`：
+
+```go
+type Account struct {
+    Ref      string // wxid 或 openid
+    Nickname string
+    Avatar   string // 微信扫码响应中的头像 URL
+}
+
+type Scan struct {
+    ID      string // uuid 或 session_id
+    Image   string // data URI
+    Status  string // 统一扫码状态
+    Account *Account
+}
+
+type Binding struct {
+    Protocol string // wechat 或 yyb
+    Account  Account
+    Status   string
+    Paused   bool
+}
+```
+
+核心能力接口为 `Protocol`：
+
+```go
+type Protocol interface {
+    Begin(context.Context) (Scan, error)
+    Poll(context.Context, string) (Scan, error)
+    Maintain(context.Context, Account) (string, error)
+    Logout(context.Context, Account) error
+}
+```
+
+协议专属 adapter 还实现签约资料、账号同步、健康检查、微信服务端自动心跳控制和 YYB 头像 URL 等可选能力。它们不要求另一协议伪装实现；除头像 URL 被任务视图使用外，其余能力目前尚未接成 agent/Wails 操作或 UI 入口。
+
+#### 字段和状态映射
+
+| local-agent 字段 | WeChat 来源 | YYB 来源 |
+|---|---|---|
+| `Scan.ID` | `Data.Uuid` | `data.session_id` |
+| `Scan.Image` | `Data.QrBase64` | `data.image_base64` |
+| `Account.Ref` | `acctSectResp.userName`，即 wxid | confirm 响应的 `openid` |
+| `Account.Nickname` | `acctSectResp.nickName` | confirm 响应的 `nickname` |
+| 任务头像 | 保存本次扫码响应 `headImgUrl`，确认响应缺失时沿用本次扫码已取得的头像 | 由 `/accounts/avatar?ref=openid` 提供 |
+| 扫码已确认 | 微信轮询成功数据包含账号信息 | poll 为 `authorized` 后还要 confirm 成功 |
+| `Maintain` | 检查 `/robot/account` 后请求 `/api/Login/HeartBeat` | `/accounts/refresh` |
+| `Logout` | `/api/Login/LogOut?wxid=...` | `DELETE /accounts?ref=openid` |
+
+WeChat 的 -8 等通用错误可能表示网络或解包失败；local-agent 将这类结果标记为 `unknown`，不据此清除账号绑定。YYB 的账号不存在映射为账号过期。删除任务时两种协议仍调用各自退出语义：微信上游登出，YYB 删除协议服务保存的账号。
+
+#### 登录和扫码流程
+
+登录时用户选择协议并配置该协议代理。local-agent 启动或连接所选服务、检查管理身份，再继续客户端云端登录；另一套已运行的协议服务不会被主动关闭。当前协议选择保存在客户端实例级，实例中的所有任务共用，任务不能单独指定协议。
+
+扫码授权过程：
+
+1. `BeginAuthorization` 为任务创建独立操作 ID 和五分钟截止时间。
+2. adapter 申请二维码并映射为统一的 `Scan`。
+3. 工作流每两秒调用一次 `Poll`。WeChat 从登录响应识别 wxid；YYB 在授权状态后调用 `/confirm` 并读取 openid。
+4. 成功绑定后将 `{Protocol, Account, Status}` 持久化。新授权保存成功后才替换旧绑定；取消、失败、过期、超时或保存失败都保留旧绑定。
+
+关闭扫码弹窗不会取消后端等待。重新发起扫码会取消旧操作并重新取码计时。
+
+#### 账号维护和进程生命周期
+
+登录期间每 15 秒检查协议进程身份；账号维护按分钟触发，按协议和账号引用去重并串行执行。WeChat 使用客户端触发的心跳；YYB 使用 `/accounts/refresh` 检查状态并刷新凭据。WeChat 协议自身的 `AutoHeartBeat` 能力已映射，但当前托管流程不启用，避免与客户端定时器重复维护。
+
+协议进程由 `runtime.go` 独立启动并持久化 PID、创建时间、端口和控制令牌。YYB 固定 `127.0.0.1:8088`；WeChat 使用已保存端口或 8062，并保留端口回退策略。客户端退出时取消扫码和账号维护，保留协议进程及协议侧凭据；重新登录后重新检查账号。手动关闭/重启协议会根据用户确认处理受影响任务。
+
+YYB 服务的原生控制台仍可在 `http://127.0.0.1:8088/` 访问。`/robot/health` 是令牌保护的 local-agent 管理端点；YYB 原生 `/health` 是协议 API。WeChat 同样由 local-agent 增加 `/robot/health`、`/robot/account`，没有通用 `/health`。
+
+#### 当前范围
+
+- 两套协议都完成扫码、账号绑定、存活检查、退出及各自非小程序可选接口的 adapter 映射。
+- 业务小程序授权码、cloud-server 业务登录和小程序云函数调用尚未接入 local-agent；扫码成功只表示“协议账号已登录”。
+- 后续业务授权应独立于协议账号维护：微信授权码取自 `Data.code`，YYB 取自 `data.result.code`，之后由业务层使用短期 code 登录目标业务系统。
+- 若未来改成每任务单独选择协议，需要把协议选择从登录级 `AuthProtocol` 移至任务绑定，并让扫码、维护、显示和删除按任务绑定的协议分发。
+
+#### 代码索引
+
+| 内容 | 文件 |
+|---|---|
+| 统一模型、接口和可选能力 | `apps/local-agent/internal/protocols/adapter.go` |
+| 微信字段与端点映射 | `apps/local-agent/internal/protocols/wechat.go` |
+| YYB 字段与端点映射 | `apps/local-agent/internal/protocols/yyb.go` |
+| 扫码等待、绑定和账号维护 | `apps/local-agent/internal/protocols/authorization.go` |
+| 进程生命周期和健康身份检查 | `apps/local-agent/internal/protocols/runtime.go` |
+| 客户端登录级协议选择 | `apps/local-agent/internal/agent/service.go` |
+| 产品约束与验收 | [对应章节](#protocol-behavior) |
+
+<a id="tasks"></a>
+
+### 任务模块需求与实现方案
+
+> 本节同时包含已实现行为和后续设计；独立数据表等草案不代表已经实现。构建与当前界面行为见客户端使用章节。
+
+#### 1. 目标与范围
+
+本文定义代理商登录 local-agent 后管理微信业务任务的第一阶段实现方案。任务是本地业务配置和授权身份的管理单位；一个任务至多保存一份当前授权信息。
+
+本阶段实现任务创建、列表、详情、配置持久化、协议选择入口、授权状态展示、换绑入口和删除流程。微信、YYB 协议适配器的具体接口、标识符和进程隔离方式尚未确定，因此授权流程采用可替换的协议适配接口，协议接入作为后续阶段。
+
+#### 2. 已确认需求
+
+- 代理商登录后可以新建多个任务。
+- 本地任务按客户端实例保存和共享，不按代理商账号隔离。同一客户端切换其他代理商登录后，可以看到原代理商创建的任务；切换代理商不清空任务、配置或本地微信授权信息，也不重置任务编号。该规则不代表不同客户端之间自动同步任务。
+- 新建任务不要求填写名称或其他字段；任务编号在界面中仅显示纯数字，例如“1”“2”“3”，不添加“任务”前缀。
+- 任务编号唯一、长期保留。任务删除后编号永久作废；重启、重新登录和删除均不导致编号复用。
+- 新任务可以在未授权状态下保存。当前客户端使用的授权协议在代理商登录时选择一次，按客户端实例保存，当前客户端下的所有任务共用该协议；任务授权时不再重复选择协议，直接进入该协议对应的授权流程。更换协议需退出客户端并重新登录选择。未选择协议不能登录。
+- 每个任务最多绑定一个微信账号授权身份。允许重新授权或更换账号，任务编号和业务配置保持不变。
+- 微信和 YYB 返回的标识符无法稳定识别同一微信账号，也无法跨协议比较。因此不做账号重复绑定校验；不同任务授权到相同账号时，客户端不阻止，由代理商自行管理。
+- 任务长期保存。客户端重启并重新登录后，任务及配置继续保留；有效授权继续使用，失效时提示重新扫码。
+- 删除任务必须二次确认。确认后清除此任务的配置与本地授权信息；协议支持时尝试退出账号。删除后的编号不再使用。
+
+#### 3. 界面设计状态与功能交互
+
+##### 3.1 此前 UI 设计结果全部废弃
+
+此前讨论的界面设计均不再作为当前方案或实现依据，包括卡片式、多列网格、横向排列、居中排列、双栏工作区、侧栏、尺寸与间距、响应式断点、座位按钮外观、观演人每列三人的排版，以及冰蓝白/石墨蓝配色和日夜主题设计。后续从新的界面设计方向重新开始，不默认沿用上述视觉与布局结论。现有预览文件仅为已废弃的历史草稿，不再作为模板。
+
+已确认的业务需求与功能行为继续保留：任务创建和永久编号、授权与换绑、长期保存、删除确认、座位条件互斥、选择观演人、配置自动保存，以及操作日志和执行参数日志共用并持续显示最新记录。自动保存失败需明确提示并保留修改；日志无记录时不伪造占位记录。上述功能具体放置位置、控件形式、展示密度与界面组织方式重新设计。
+
+小窗口可用性作为功能目标保留。此前预览中的模拟交互不代表真实数据库或协议能力已经实现，旧设计不作为新方案的模板。
+
+##### 当前 UI 讨论方向：固定行高任务列表与弹窗配置
+
+已选择第四套“雾霭青”配色作为客户端落地主题：浅灰蓝背景、白色任务行与弹窗、青蓝色主操作和浅青蓝选中态。任务主界面及座位配置已接入真实本地保存；微信/YYB 授权、观演人与购票执行仍待协议阶段接入，不使用草图中的模拟账号或模拟成功流程。
+
+- 任务列表中的每条任务采用固定高度，内容变化和配置操作不撑高任务行；窄窗口可调整字段编排，但同一窗口宽度下任务行高度保持一致。
+- 点击座位要求或观演人区域打开对应配置弹窗，不在任务行下方展开，不挤动列表中其他任务。选择后仍自动保存，关闭弹窗不撤销已保存修改。
+- 座位选择摘要始终单行显示，包括窄窗口；超出可用宽度使用省略号。鼠标悬停时显示完整选择内容，点击则进入配置弹窗查看与修改；触屏不依赖悬停。
+- 观演人及最新日志等较长内容也不得使任务行高度变化，具体摘要与完整内容的查看形式随 UI 草图细化。当前草图用于确认布局与交互，配色和其他细节尚未最终定稿。
+
+##### 3.2 任务详情与授权
+
+登录界面要求代理商选择微信或 YYB 作为当前客户端的授权协议。协议选择属于实例级本地设置，与代理商账号及 remember 登录信息独立保存；退出并切换代理商不会清空该设置，可在下一次登录时更改。协议值经 DPAPI 保护并在同一事务中与登录偏好保存，仅登录成功后生效。详情显示任务编号、授权方式、授权状态和该任务配置。未授权时提供“授权账号”；已授权或授权失效时提供“重新授权/更换账号”。用户点击后直接进入当前客户端已选协议对应的扫码流程，无需在任务内再次选择。
+
+授权过程是一次替换事务：协议授权成功且新凭据已安全持久化后，才替换此任务原授权。用户取消、授权失败或本地保存失败时，保留原任务配置和原授权记录。不能承诺协议服务端或微信侧在扫码过程中不会改变现有登录态。
+
+授权成功后记录协议类型、协议返回的本地账号标识（仅用于该协议必要的后续调用，不用于跨任务去重）、展示名称（若协议提供）及受保护的授权凭据。敏感凭据不返回 Vue，不写入日志。
+
+##### 3.3 删除确认
+
+确认框显示任务编号，并说明删除不可恢复、会清除任务配置及本地授权信息，且会在协议支持时尝试退出账号。取消不产生副作用。确认后先尽力执行协议退出，再清除本地任务数据；退出不支持或失败不阻止本地删除，并显示删除结果及退出状态。
+
+#### 4. 本地数据设计
+
+##### 已补充的购票配置需求
+
+- 座位条件采用“客户端全局配置提供可选项、各任务独立勾选”的方式。全局选项以 `apps/local-agent/config/seat-catalog.json` 为准；交付时放在客户端实例根目录的 `config/seat-catalog.json`，正式运行相对于 EXE 所在目录解析，开发时沿用 `ROBOT_AGENT_ROOT`，不依赖启动工作目录。
+- 按当前 JSON 结构读取：`stadium` 为场馆；`tiers` 提供票类及对应 `price`；每个票类下的 `areas` 提供看台编号 `code`、楼层 `level`、特殊区域说明 `specialArea`、可售状态 `isSaleable` 和限制说明 `restriction`。看台继承所属票类及票价。选项来自配置，不在任务页面硬编码；不因此恢复此前已废弃的 UI 设计。
+- 座位选择模式采用 SuperStar 足球登记中的名称和规则，统一为“指定票类”和“固定区域”。每个任务二选一，两者互斥，不同时作为生效条件；各任务的勾选互相独立，并按已确认规则自动保存。
+- 指定票类：从配置中的票类多选，当前为 `VIP、S、A、B、C、D、E`，展示票类与对应价格；允许跨档、非连续组合，例如 `A、C、E`，不转换为最低价到最高价的连续区间。
+- 新建任务默认采用“指定票类”模式，预选 `A、B、C、D、E`，不预选 `VIP、S`；默认选择随任务创建一并保存。默认项仍须来自当前有效 JSON 配置，仅预选其中实际存在的上述票类，不硬造缺失选项；配置不可用时仍可创建未完成座位配置的任务。该默认规则仅用于新建任务，不覆盖已有任务的选择，也不用于自动恢复因全局配置更新而失效的座位配置。
+- 固定区域：从配置中的可售看台编号多选，按“首层、顶层、VIP”分组，各组支持整组全选及取消全选。VIP 票类下的看台独立归入 VIP 组，不因其 `level` 为首层而重复出现在首层组；其他看台按配置的 `level` 归组。看台选项采用固定两行的紧凑布局：第一行显示编号及特殊区域说明 `specialArea`（如有），第二行显示票类及价格；编号始终完整显示，说明使用剩余宽度，超长单行省略并通过悬停提示查看全文。所有选项等高，不因说明为空或较长而改变高度；窄窗口减少每行选项数量以保持两行结构。配置文件中的说明字段仍保留。`isSaleable: false` 的看台从选择列表及整组全选范围中排除。
+- 任务内不手填最低价/最高价或自由输入看台编号，只能选择配置提供的对应选项。选择控件的具体视觉样式后续设计，不恢复已废弃的 UI。
+- 全局可选项为空时，该模式没有可勾选内容，应提示先配置全局选项；允许保存未完成配置的任务。
+- 客户端启动时读取并校验本地 JSON 文件；文件不存在、无法读取或格式无效时，应提示配置不可用，不得以无效配置覆盖有效数据。具体字段校验规则在实现时细化；仍允许先创建、保存未完成座位配置的任务。
+- 全局配置文件更新后，需要重启客户端才生效，不提供运行期间的配置热更新或任务内手动刷新。重启加载有效的新配置后，所有已经保存座位配置的任务均需重新进行座位配置，不限于选项被修改或删除的任务；旧座位选择不再作为有效配置使用，也不自动映射或沿用。任务及其他配置保留，重新选择后按自动保存规则保存。
+- 不再显示“有新配置”提示，原“保留旧选择继续使用、提示更新并手动刷新”的规则废弃。需要重新配置的任务按座位未配置处理，在完成座位配置前不能使用旧座位条件执行购票。全局配置没有变化时，正常重启客户端不要求重新配置座位。
+- 已确认的新旧配置判断规则：客户端启动时读取并校验 JSON，将有效配置规范化后计算 SHA-256 内容指纹，与本地持久保存的上一次有效配置指纹比较；不以文件名、修改时间或手动版本号判断。首次有效读取时保存基准指纹，后续指纹相同则保留任务座位配置，指纹不同则使所有已保存座位配置的任务失效并要求重新配置。
+- 指纹覆盖场馆名称、票类及价格，以及看台编号、所属票类、楼层、特殊区域说明、可售状态与限制说明；这些内容的修改、新增或删除均视为配置更新。规范化时使用固定字段顺序，按票类标识及看台编号排序，并统一数值序列化；仅调整缩进、空白、换行、对象字段顺序或票类与看台排列顺序不视为更新。
+- 文件缺失、无法读取或内容无效时，不更新有效配置指纹，不作为新配置生效。持久保存有效目录指纹和任务配置时所使用的指纹；任务座位配置的失效状态也需持久保存，避免再次重启恢复旧选择。具体存储字段在实现时细化。
+- 每个任务支持获取当前微信账号下绑定的观演人，并选择本任务要购票的人员。接口调用链、稳定观演人标识及返回字段留待后续检查，不假定微信/YYB 基础协议本身提供完整观演人列表；具体 UI 展示和选择方式重新设计。
+- 允许不选择观演人并保存任务；执行购票前必须至少选择一人。人数上限后续结合实际购票规则确定，当前不预设具体上限。
+- 提供手动刷新观演人的功能。成功获取当前账号的最新列表后，仍存在且能可靠识别为同一人的观演人保留勾选，已移除的人员取消勾选；不能可靠识别的人员不自动继承旧勾选，不仅凭姓名匹配。刷新失败不视为人员已移除，应保留原列表与勾选并提示失败；账号绑定变化后不得用旧账号的刷新结果覆盖新账号数据。
+- 任务配置保存所选座位模式、该模式对应的配置以及观演人选择。具体存储字段与校验规则在实现时细化。
+- 已确认：切换座位模式时，以当前模式的选择为依据自动转换，替换目标模式的勾选，不恢复目标模式的历史草稿。“指定票类”切换到“固定区域”时，勾选所选票类下的全部可售看台，不可售看台不参与转换；“固定区域”切换到“指定票类”时，勾选已选看台所属的票类，并去重，同一票类下任一看台被选中即可转换为该票类。当前没有选择时，转换后也不勾选任何选项。模式与转换结果一并自动保存，执行仅采用当前模式。
+- 上述转换按票类归属进行，属于范围转换而非精确往返：例如只选 A 类中的部分看台，切换为指定票类后选中 A，再切回固定区域会选中 A 类下全部可售看台。
+- 已确认：换绑账号成功后清除旧账号观演人数据与勾选，重新获取新账号观演人，座位配置保留；不能将旧账号观演人直接沿用到新账号。新账号观演人获取失败时保留空列表并允许重试，不恢复旧账号人员。取消或换绑失败时仍按授权替换事务规则保留原数据。
+
+##### 基础存储
+
+当前首版实现沿用 `settings` 表的 DPAPI 加密存储，以 `tasks.v1` 单条记录原子保存编号序列、任务座位配置、目录指纹及每个任务最新日志。任务与递增编号在同一次写入中提交，删除不回退编号。`auth-protocol` 单独以 DPAPI 加密保存；登录成功后，与可选 remember 表单在同一 SQLite 事务中更新。授权协议设置与代理商身份无关。下方独立表结构为后续业务扩展的设计草案，并非当前数据库已创建的表。
+
+沿用 Go 业务层、SQLite 持久化及 Windows DPAPI 保护敏感数据的现有结构。建议增加：
+
+```sql
+CREATE TABLE tasks (
+  id INTEGER PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  protocol TEXT,
+  auth_status TEXT NOT NULL,
+  account_ref BLOB,
+  account_label TEXT,
+  credential BLOB,
+  config BLOB NOT NULL
+);
+
+CREATE TABLE task_sequence (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  next_number INTEGER NOT NULL
+);
+```
+
+`id` 是用户可见且永不复用的任务编号。创建任务时在同一个 SQLite 事务中读取并递增 `next_number`、插入默认配置，避免崩溃或并发创建造成重号。删除只删除 `tasks` 中对应行，不回退序号。序号初始化为 1；升级时通过事务及现有任务最大编号安全初始化。业务配置与授权凭据分字段保存；凭据及需要保密的配置字段使用 DPAPI 加密后写入 SQLite。实际表结构和配置字段在实现业务设置时细化。
+
+建议授权状态枚举：`unauthorized`、`authorizing`（仅运行时）、`authorized`、`expired`、`error`。协议类型为 `wechat` 或 `yyb`，授权前为空。数据库不持久化瞬时的 `authorizing` 状态；启动时若残留，按 `unauthorized` 或原有有效状态恢复。
+
+#### 5. Go 模块边界
+
+- `internal/tasks`：任务领域服务、编号分配、创建/读取/更新/删除及授权替换规则。
+- `internal/store`：SQLite 迁移、事务及任务仓储；不在 Vue 层直接访问数据库。
+- `internal/protocols`：定义统一的协议适配接口及微信、YYB 实现。具体能力以协议调查结果为准。
+- Wails 绑定仅暴露任务视图模型和操作结果，不暴露凭据、密钥或内部会话 token。
+- Vue 负责列表、详情、确认框、授权步骤和状态呈现；不承载协议调用或授权秘密。
+
+协议适配器后续按实际能力实现创建扫码、轮询授权、检查会话、退出及关闭能力。两种协议可有不同流程，不为统一接口强行抹平差异；暂不假定两种协议都支持可靠的会话恢复、主动退出或独立实例。
+
+#### 6. 启动恢复与生命周期
+
+客户端启动且代理商完成云端登录后，读取当前客户端实例的全部本地任务，不按当前代理商过滤，并按协议适配器能力检查授权状态。检查成功则标记可用；明确会话失效时标记 `expired` 并在任务列表提示重新扫码；网络不可达或服务暂时不可用时显示“暂时无法检查”，保留凭据和任务，不将临时网络错误判为授权失效或清除数据。
+
+删除、登出客户端和关闭客户端是不同生命周期。客户端登出/会话过期不会删除本地任务；协议进程何时停止由后续协议进程管理设计决定。
+
+#### 7. 错误处理与日志
+
+- 创建任务的数据库事务失败时不显示已创建任务，也不消耗不确定的部分数据；序号更新和任务插入原子提交。
+- 授权替换采用本地事务，凭据保护或写入失败时保留旧记录。
+- 删除时协议退出采用有时限的尽力尝试；退出结果与本地删除结果分开呈现。协议退出调用不得阻塞界面无期限。
+- 日志包括任务操作记录与后续任务执行参数记录，可记录任务编号、协议类型、操作结果、错误类别和必要的业务参数摘要；不得记录二维码原文、密码、密钥、凭据、完整授权响应或未经处理的敏感个人信息。
+- 同一任务的两类日志按实际写入顺序合并，任务日志展示位置仅显示最新一条并持续保留，直至下一条记录替换；并发或同时间戳的记录使用递增记录序号确定先后。每个任务的最新记录落盘保存，客户端重启后继续显示，不因界面重新渲染或任务切换而丢失；无记录时保持空白。完整历史日志是否保存、查询入口及清理策略另定。
+- 网络错误、协议服务不可用、授权拒绝、授权超时和本地存储错误分别映射为可理解提示。
+
+#### 8. 实施顺序与验收
+
+1. SQLite schema migration、任务仓储及事务化永久编号分配。
+2. Go 任务服务及 Wails 绑定：创建、列表、详情、配置更新、删除。
+3. Vue 任务列表、空状态、详情及删除确认。
+4. 授权适配接口、状态模型和替换事务；协议实现先用测试替身验证，待后续协议调查后接入真实 API。
+5. 启动恢复逻辑和授权状态检查接入真实适配器后验收。
+
+验收重点：删除后编号永不复用；重启及重新登录后任务和配置仍存在；取消删除没有副作用；确认删除会清除任务本地数据；授权失败不覆盖原本地授权；协议退出失败不阻止本地删除；临时网络故障不误判为授权失效；Vue 无法读取授权凭据。
+
+#### 9. 后续探讨事项
+
+以下事项明确留待后续，不作为当前方案的承诺：
+
+- 微信、YYB 协议的实际启动方式、程序来源、参数和健康检查实现。
+- 协议是否支持每个客户端实例独立端口、数据目录和进程；多个任务如何共用或隔离协议服务。
+- 两种协议返回字段的稳定性、会话恢复、授权状态检查和退出能力。
+- 授权过程若影响同账号既有会话时的提示和恢复策略。
+- 除已确认座位模式与观演人选择之外的任务业务字段（例如演出/场次）、运行/停止语义和后续任务执行模块。
+
+<a id="interfaces"></a>
+
+## 配置格式与接口参考
+
+<a id="cfg"></a>
+
+### 客户端 cfg 配置文件协议
+
+> 客户端已支持 cfg 导入，见客户端使用章节；原文中“尚未实现”的描述已更新。
+
+本协议用于 cloud-server 后台向 Windows local-agent 交付通信配置。内部内容为 UTF-8 JSON；交付文件为 `.cfg` 二进制，采用 AES-256-GCM 加密及 Ed25519 签名。文件包装密钥与接口通信密钥、数据库凭据加密密钥独立。
+
+#### 业务入口
+
+默认下载文件名为 `bootstrap.cfg`，打包交付时放入软件的 `config/bootstrap.cfg`。客户端自动查找及导入逻辑将在 local-agent 中实现；首次启动无本地配置时读取此文件，文件缺失或校验失败时允许手动选择配置。导出 ID 保留在文件内容与审计记录中用于追溯。
+
+管理员登录后，在代理商列表点击“导出客户端配置”，确认后下载。API：`POST /api/admin/v1/client-config/export`，Bearer 管理员令牌，普通 JSON 请求体 `{}`。成功返回 `application/octet-stream` 和 `Content-Disposition: attachment`；错误沿用后台普通 JSON 错误响应。未认证返回 401，未启用导出返回 503。
+
+由服务端生成配置、加密、签名，浏览器只下载二进制，不接收文件包装密钥或签名私钥。服务端成功记录 `client_config_exported` 审计后才发送文件；审计含管理员、IP、导出 ID、密钥 ID，不含密钥或配置正文。审计表示已生成并允许返回，无法证明浏览器下载完成。
+
+本版配置为部署级通信配置，使用现有 `AGENT_TRANSPORT_KEY_ID` 指向的共享通信密钥，不包含代理商密码、登录令牌或设备编号，不绑定具体代理商，不增加代理商独立密钥体系。导入配置不替代代理商登录授权。每次导出生成新的导出 ID、时间和随机 nonce；重复下载不会轮换任何密钥。
+
+#### 服务端配置
+
+在 `apps/cloud-server` 运行 `go run ./cmd/config-keys`，生成独立随机密钥，并输出以下配置及客户端验签公钥。输出含秘密，安全保存，不提交到 Git、不贴入日志或聊天。
+
+| 环境变量 | 含义 |
+| --- | --- |
+| CLIENT_CONFIG_SERVER_URL | 客户电脑能访问的 HTTP(S) 服务根地址，如 `http://server.example:8080`，不含 API 路径、用户信息、查询或片段 |
+| CLIENT_CONFIG_ENCRYPTION_KEY_ID | 包装加密密钥 ID，例如 `cfg-aes-v1` |
+| CLIENT_CONFIG_ENCRYPTION_KEY | Base64 编码的 32 字节 AES 密钥 |
+| CLIENT_CONFIG_SIGNING_KEY_ID | 签名密钥 ID，例如 `cfg-sign-v1` |
+| CLIENT_CONFIG_SIGNING_SEED | Base64 编码的 32 字节 Ed25519 私钥种子，仅服务端保存 |
+
+五项全部为空时禁用导出，原部署仍可运行；填写部分、格式不正确或复用敏感密钥时启动报错。Compose 已透传这些变量。更改后重建/重启服务端。对外地址由显式配置确定，不根据请求 Host 生成。
+
+客户端构建时需要包装密钥 ID/密钥以及签名密钥 ID/公钥（生成命令输出注释中的 `CLIENT_CONFIG_SIGNING_PUBLIC_KEY`）。**不得将签名种子放入客户端、配置文件或网页。** 包装密钥固定使用但允许通过 ID 轮换；旧文件是否可导入取决于客户端内置信任密钥表。先发布支持新密钥的客户端，再切换后台导出密钥；需要兼容旧文件时保留旧密钥表。
+
+#### 二进制格式
+
+所有长度按字节计算，整数采用大端序。整个文件最大 65536 字节。
+
+| 顺序 | 长度 | 内容 |
+| --- | --- | --- |
+| 1 | 8 | ASCII magic：`RBTCFG\r\n` |
+| 2 | 4 | 头部 JSON 长度，无符号 uint32，范围 2–4096 |
+| 3 | 可变 | UTF-8 头部 JSON |
+| 4 | 可变 | AES-GCM 密文，尾部包含 16 字节认证标签 |
+| 5 | 64 | Ed25519 签名 |
+
+头部 JSON 字段：`version`（整数 1）、`encryption_key_id`、`signing_key_id`、`nonce`（12 随机字节的标准 Base64）。密钥 ID 为 1–64 位 ASCII 字母、数字、连字符、下划线或点。AES-GCM AAD 为第 1–3 部分的原始字节；签名覆盖第 1–4 部分的原始字节。验签时禁止将头部 JSON 重新序列化，也不从文件接收验签公钥。
+
+解密后的配置 JSON 示例（密钥是说明用占位符）：
+
+```json
+{
+  "version": 1,
+  "server_url": "http://server.example:8080",
+  "transport_key_id": "client-v1",
+  "transport_key": "<Base64 编码的 32 字节接口通信密钥>",
+  "export_id": "<UUID>",
+  "issued_at": "2026-11-03T00:00:00Z"
+}
+```
+
+文件格式版本和配置内容版本独立，第一版均为 1。算法由文件版本固定，禁止由文件指定任意算法或降级。`issued_at` 用于追溯，不是会话有效期，配置文件不携带 7 天登录会话。
+
+#### 客户端导入约定
+
+1. 限制文件大小，验证 magic、长度和版本，拒绝截断及额外数据。
+2. 根据签名密钥 ID 在本地可信公钥表中查找公钥，先验证完整签名。
+3. 验签通过后，按包装密钥 ID 解密，并验证 GCM 标签和 JSON 字段。
+4. 完整校验后才替换实例配置；失败保留原配置，允许重新选择文件。
+5. 敏感信息使用 Windows DPAPI CurrentUser 保护后保存在当前实例目录，禁止明文 JSON 落盘和日志输出。后续启动自动读取；登录页允许重新导入。
+
+服务端 `internal/clientconfig.Open` 提供参考解码实现，local-agent 已实现导入，构建及可信密钥准备见[客户端构建与使用](#local-agent)。文件加密提高直接读取门槛，固定包装密钥仍可能被客户端逆向提取；数字签名不阻止复制真实文件，也不替代账号授权。当前管理页面仍使用现有 HTTP 普通 JSON 协议；签名不能改变后台登录的传输边界。
+
+<a id="protocol-api"></a>
+
+### 微信与 YYB 协议服务 API
+
+> 协议服务 API 以本仓库源码及 Swagger 定义为准；版本更新时复核路由、字段大小写、响应信封、业务码和端口配置。
+
+> 范围：本仓库 `protocol-services/wechat`、`protocol-services/yyb` 的协议服务 API，以及外部 RongCheng C# HTTP client 暴露的对应调用。  
+> 更新日期：2026-11-08。以源码/API 文档为准；升级协议服务后应复核端点、字段和业务码。
+
+#### 服务和端口
+
+| 服务 | 本仓库默认端口 | 外部 C# client 默认值 | 说明 |
+|---|---:|---:|---|
+| YYB Go | `8088` | `18080` | YYB 可通过 `-port` 指定；local-agent 固定使用 8088 |
+| WeChat | `8062` | 用户配置 `wechat_port` | local-agent 管理模式可通过环境变量指定端口 |
+
+YYB C# client 的 `BaseUrl` 与本仓库 YYB 可执行程序默认端口不同。使用该 C# client 调用本仓库构建的 YYB 时，需将客户端地址改为实际端口。
+
+#### 响应和错误
+
+YYB 的 JSON API 外层为 `{code,msg,data}`，成功时 HTTP 2xx 且 `code == 0`。`GET /health` 的 `{ok:true}` 位于 `data` 中；`/accounts/avatar` 返回图片或 HTTP 重定向，不是 JSON 信封。
+
+WeChat 普通业务 API 外层由 Go struct 序列化，字段通常为 `Code`、`Success`、`Message`、`Data` 等。多数成功分支为 `Code == 0 && Success == true`；车机二维码创建成功为 `Code == 1 && Success == true`。协议响应中的状态码、二维码状态和微信 protobuf `BaseResponse.Ret` 是不同层级。
+
+| 协议层错误码 | 含义 |
+|---|---|
+| YYB `400` | 参数或 JSON 无效 |
+| YYB `404` | 路由、二维码会话或账号不存在 |
+| YYB `405` | HTTP 方法不支持 |
+| YYB `409` | 扫码授权缓冲尚未就绪 |
+| YYB `500` | 服务内部错误 |
+| YYB `502` | 上游微信协议调用失败 |
+| WeChat `-8` | 账号/会话、传输、解包、序列化等通用错误；需结合 `Message` 判断 |
+| WeChat `-9` | 获取二维码过于频繁，UUID 为空 |
+| WeChat `-3` | 需要额外扫码验证 |
+| WeChat `-2` | 扫码通知解包异常 |
+| WeChat `errtype` | 底层协议请求错误透传 |
+
+#### YYB API
+
+##### 端点
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `GET` | `/health` | 服务健康状态 |
+| `POST` | `/qr?as_base64=true` | 创建二维码会话 |
+| `GET` | `/qr/{session_id}/image` | 获取二维码图片 |
+| `GET` | `/qr/{session_id}/poll` | 查询扫码状态 |
+| `POST` | `/qr/{session_id}/confirm` | 取得登录缓冲并保存账号 |
+| `GET` | `/accounts` | 列出账号 |
+| `DELETE` | `/accounts?ref={ref}` | 删除账号 |
+| `POST` | `/accounts/refresh` | 检查存活并刷新登录凭据 |
+| `POST` | `/accounts/resync` | 重新同步账号资料 |
+| `GET` | `/accounts/avatar?ref={ref}` | 获取账号头像 |
+| `POST` | `/wxapp/getCode` | 获取小程序授权码 |
+| `POST` | `/wxapp/getPhoneNumber` | 获取授权手机号 |
+| `POST` | `/wxapp/operateWxData` | 调用小程序云函数 |
+
+扫码请求顺序为：
+
+```text
+POST /qr?as_base64=true
+GET  /qr/{session_id}/poll
+POST /qr/{session_id}/confirm  # poll 为 authorized 后调用
+```
+
+创建二维码响应示例：
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "session_id": "SESSION_ID",
+    "status": "pending",
+    "image_url": "/qr/SESSION_ID/image",
+    "image_base64": "data:image/jpeg;base64,..."
+  }
+}
+```
+
+`as_base64=true` 时内嵌二维码 data URI；否则可用 `image_url` 请求图片。轮询 `data.status` 常见值为 `pending`、`scanned`、`authorized`、`confirmed`、`expired`、`cancelled`、`unknown`。`data.errcode` 是上游扫码状态：408 等待、404 已扫码、403 取消、402 过期、405 且带授权码表示授权完成。它与外层 HTTP/业务 `code` 不同。
+
+确认接口返回账号公开对象，常用字段为 `id`、`openid`、`uin`、`nickname`、`avatar`、`status`。`openid` 是协议账号标识；`id` 是 YYB 本地数据库 ID。账号维护接口的 `ref` 可解析为 ID、UIN 或 openid，客户端绑定宜保存 `openid`。
+
+确认成功后的公开账号结果在协议进程内保留五分钟，从首次确认成功开始计时。期间重复 poll 返回 `confirmed`，重复 confirm 返回同一账号结果，不重复执行上游登录和账号保存；重试不会延长保留时间。超过期限返回 404，创建新二维码时清理过期结果。缓存不包含登录凭据，不跨协议进程重启保留；二维码图片在首次确认成功后删除。
+
+`POST /accounts/refresh` 和 `/accounts/resync` 接收可选请求体：
+
+```json
+{"ref":"openid 或其他可解析账号引用"}
+```
+
+不传 `ref` 表示批量操作全部账号。`refresh` 返回 `id`、`openid`、`uin`、`nickname`、`status`；`resync` 返回更新后的账号对象。`refresh` 兼具存活检查和凭据刷新，不是 WeChat `/HeartBeat` 的同类协议包。
+
+头像端点接受账号 `ref`，返回图片，或在需要访问远端头像时重定向。
+
+三个小程序接口的请求字段：
+
+```json
+{"ref":"openid","app_id":"wx..."}
+```
+
+`operateWxData` 还要求 `payload`：
+
+```json
+{"ref":"openid","app_id":"wx...","payload":{}}
+```
+
+响应通常为 `{code,msg,data:{openid,result}}`。操作目录码 `1001`、`1002`、`1003` 分别对应 `getCode`、`getPhoneNumber`、`operateWxData`；它们不是外层 HTTP 响应码。
+
+#### WeChat API
+
+##### 端点
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `POST` | `/api/Login/LoginGetQRCar` | 创建车机登录二维码 |
+| `POST` | `/api/Login/LoginCheckQR?uuid={uuid}` | 轮询二维码 |
+| `POST` | `/api/Login/HeartBeat?wxid={wxid}` | 发送一次微信心跳 |
+| `POST` | `/api/Login/HeartBeatLong?wxid={wxid}` | 长连接心跳；源码提供，C# client 未暴露 |
+| `POST` | `/api/Login/AutoHeartBeat?wxid={wxid}` | 开启服务端自动心跳/自动二次登录 |
+| `POST` | `/api/Login/CloseAutoHeartBeat?wxid={wxid}` | 关闭服务端自动心跳 |
+| `POST` | `/api/Login/LogOut?wxid={wxid}` | 微信账号登出 |
+| `POST` | `/api/User/GetContractProfile?wxid={wxid}` | 读取微信个人资料 |
+| `POST` | `/api/Wxapp/JSLogin` | 获取小程序授权码 |
+| `POST` | `/api/Wxapp/CloudCallFunction` | 调用小程序云函数 |
+
+车机二维码请求体：
+
+```json
+{"DeviceID":"","DeviceName":"","LoginType":"","Proxy":{"ProxyIp":"","ProxyUser":"","ProxyPassword":""}}
+```
+
+成功外层 `Code=1`。二维码数据通常包含 `Uuid`、`QrBase64`、`QrUrl`、`ExpiredTime`。轮询请求无请求体；成功响应的数据字段由微信 protobuf 消息决定。账号确认成功时会带有 `acctSectResp.userName`，其值为 `wxid`。`-3` 表示需要额外验证，不能当作一般网络失败。
+
+`HeartBeat` 和 `LogOut` 不带请求体，使用 `wxid` 查询参数。心跳响应的微信 `BaseResponse.Ret == 0` 表示该次请求成功；外层 `Code`、`Success` 也需一并检查。自动心跳接口会在协议服务进程内启动/停止后台心跳；local-agent 托管模式由客户端定时维护，不应同时启用两种心跳机制。
+
+`GetContractProfile` 无请求体，响应 `Data` 为微信 `GetProfileResponse`，包括微信侧个人资料，不代表目标小程序业务授权已完成。
+
+小程序授权码请求：
+
+```json
+{"Appid":"wx...","Wxid":"wxid_xxx"}
+```
+
+授权码位于外层 `Data.code`；外层 `Code` 是协议接口业务码。云函数请求：
+
+```json
+{"Appid":"wx...","Data":"云函数调用数据字符串","Wxid":"wxid_xxx"}
+```
+
+云函数结果位于 `Data.data`。其中内部载荷由目标小程序定义。
+
+#### local-agent 管理扩展
+
+以下端点是本仓库为托管协议进程添加的控制接口，不属于上面的外部 C# 协议客户端接口：
+
+| 协议 | 方法和路径 | 用途 |
+|---|---|---|
+| YYB / WeChat | `GET /robot/health` | 校验协议实例身份和进程 PID |
+| WeChat | `GET /robot/account?wxid={wxid}` | 查询微信账号是否仍在 Redis 账号存储中 |
+
+local-agent 管理模式通过 `Authorization: Bearer {ROBOT_PROTOCOL_TOKEN}` 保护 `/robot/` 端点。YYB 原生 `/health`、控制台和其他原生 API 沿用协议服务原有访问方式。WeChat 没有通用 `/health` 路由。
+
+#### 源码索引
+
+| 内容 | 文件 |
+|---|---|
+| YYB 路由和 OpenAPI | `protocol-services/yyb/internal/httpapi/app.go`、`openapi.go` |
+| YYB 扫码状态解析 | `protocol-services/yyb/internal/qr/qr.go` |
+| WeChat 路由 | `protocol-services/wechat/routers/router.go` |
+| WeChat 控制器 | `protocol-services/wechat/controllers/Login.go`、`User.go`、`Wxapp.go` |
+| 本地 WeChat 管理路由 | `protocol-services/wechat/main.go` |
+| RongCheng C# 客户端参考 | `E:\蓉城\Projects\RongCheng-WeChat\Network\HttpClient\WeChatHttpClient.cs`、`E:\蓉城\Projects\RongCheng-YYB\Network\HttpClient\YYBHttpClient.cs` |
+
+<a id="football"></a>
+
+### Football 蓉城业务接口
+
+> 参考来源为仓库外原 Football 客户端，需对照目标服务版本维护。
+
+> 本文记录 Football 客户端调用的 CDN3/CDN5 业务接口。协议服务 API 见 [微信与YYB协议服务API参考](#protocol-api)，local-agent 的协议适配和状态流程见 [local-agent协议适配与流程](#protocol-flow)。  
+> 更新时间：2026-11-08。目标服务端业务码和字段可能变化，以当前服务端响应为准。
+
+#### 请求约定
+
+- CDN3：`https://fccdn1.k4n.cc/`；CDN5：`https://fccdn5.k4n.cc/`。
+- 登录后的 CDN3 接口携带 `Authorization: Bearer {token}`。
+- 请求使用工程配置的设备 User-Agent、微信小程序 Referer 和代理池。
+- HTTP 非 2xx 或 JSON 解析失败时，客户端将 `Success=false`。
+
+#### CDN3
+
+| 方法 | 路径 | 请求数据 | 用途 |
+|---|---|---|---|
+| `POST` | `/fc/wx_api/v1/Login/index` | 登录 JSON | 获取 token、uid |
+| `POST` | `/fc/wx_api/v1/Member/getCrewsList?lid2={uid}` | 空或 `{}` | 获取观赛人 |
+| `POST` | `/fc/wx_api/v1/Member/getUserInfo?lid2={uid}` | `{}` | 获取用户资料 |
+| `POST` | `/fc/wx_api/v1/Member/updateUserInfo?lid2={uid}` | 加密资料 | 更新资料 |
+| `POST` | `/fc/wx_api/v1/MatchCon/getBillRegion?lid2={uid}` | `{"id":"{matchId}"}` | 获取票区库存 |
+| `POST` | `/fc/wx_api/v1/MatchOrder/getMatchOrderInfo?lid2={uid}` | `{"id":"{orderId}"}` | 查询订单 |
+| `POST` | `/fc/wx_api/v1/MatchOrder/cancelOrder?lid2={uid}` | `{"order_id":{orderId}}` | 取消订单 |
+| `POST` | `/fc/wx_api/v1/MatchOrder/refundOrder?lid2={uid}` | `{"order_id":{orderId}}` | 退款 |
+
+客户端成功业务码为 `1` 或 `200`。登录请求核心字段为 `code`、`s.deviceId`，成功响应读取 `token`、`info.id`。票区响应读取 `btnStatus`、`btnText`、`maxNum`、`typeCode` 和 `data`。
+
+资料更新请求：
+
+```json
+{"encryptedData":"小写十六进制密文","version":1,"expireTime":1700000000000}
+```
+
+工程使用 AES-CBC/PKCS7 加密资料 JSON，密钥为 Base64，IV 为 UTF-8 字符串。
+
+#### CDN5 下单
+
+**`POST /fc/wx_api/v1/MatchCon/createMatchOrder`**
+
+```text
+/fc/wx_api/v1/MatchCon/createMatchOrder?lid2={uid}&s_time={unix秒}&s_sign={md5签名}
+```
+
+请求体：
+
+```json
+{"encryptedData":"小写十六进制密文","version":1,"expireTime":1700000000000,"agree":true,"id":"比赛或场次ID","regions":[],"users":[]}
+```
+
+签名：
+
+```text
+s_sign = lowercase_md5("Y6xkC7b5" + s_time + authCode + uid)
+```
+
+响应读取 `code`、`msg`、`timeout`、`data`；最终下单结果需结合业务码和消息判断。
+
+#### 源码索引
+
+这些 Football C# 源码目录不包含在当前 Robot 仓库中；接口细节来自原客户端工程参考。
+
+| 内容 | 文件 |
+|---|---|
+| CDN3 客户端 | `src/Football.Infrastructure/RongCheng/RongChengCdn1Client.cs` |
+| CDN5 客户端 | `src/Football.Infrastructure/RongCheng/RongChengCdn5Client.cs` |
+| CDN 请求头 | `src/Football.Infrastructure/RongCheng/RongChengRequestHeaders.cs` |
+| CDN5 加密签名 | `src/Football.Infrastructure/RongCheng/RongChengOrderCrypto.cs` |
+
+<a id="design"></a>
+
+## 架构与历史设计
+
+<a id="architecture"></a>
+
+### 项目初始架构与准备方案
+
+> 历史规划，保留架构目标与准备清单。目录树、技术选择和断线执行规则不代表当前全部落地；当前云端使用 MySQL 8.0。
+
+#### 1. 文档目的
+
+本文用于确定新工程的基础技术方案、代码组织方式和部署方向。新工程名称暂定为 **Robot**，作为承载多个独立功能模块的平台名称；不沿用 Football 名称，也不预设后续模块范围。
+
+新工程不直接复制旧工程的功能划分。后续由需求逐项确认，每个功能单独定义接口、数据模型、运行边界和验收条件，再进行实现。
+
+工程包含两类协议能力：
+
+- **YYB 协议**：应用宝相关登录和小程序协议能力。
+- **微信协议**：微信登录、会话维护和小程序协议能力。
+
+#### 2. 总体架构
+
+采用“云端管理与同步、本地执行”的架构：
+
+```text
+                         HTTPS / WebSocket
+┌──────────────────┐  <-------------------->  ┌──────────────────┐
+│  云端管理服务      │                         │  本地 Agent       │
+│  Go               │                         │  Go               │
+│                  │                         │                  │
+│ 用户/设备管理      │                         │ YYB 协议服务       │
+│ 配置版本管理       │                         │ 微信协议服务       │
+│ 任务同步           │                         │ 本地任务执行       │
+│ 状态与事件汇总     │                         │ 账号与会话         │
+└────────┬─────────┘                         │ 本地缓存           │
+         │                                   └──────────────────┘
+         │
+    Vue/React Web
+```
+
+##### 2.1 云端职责
+
+- 用户、设备和权限管理。
+- 配置及配置版本管理。
+- 向本地 Agent 同步已确认配置和管理指令。
+- 接收本地 Agent 上报的任务状态、事件和日志摘要。
+- 提供 Web 管理界面所需的 API。
+- 保存适合云端管理的数据，不保存不必要的微信协议会话和敏感凭据。
+
+##### 2.2 本地 Agent 职责
+
+- 运行本地协议进程或协议适配器。
+- 接入 YYB（应用宝）协议。
+- 接入微信协议。
+- 保存本地账号、登录缓冲、会话和代理配置。
+- 执行后续逐项实现的业务任务。
+- 在云端暂时不可达时，使用已确认的配置快照继续执行并缓存待同步事件。
+
+##### 2.3 连接中断规则
+
+云端连接不可用与协议业务接口不可用是两种独立状态：
+
+- 云端暂时不可达、本地协议服务正常：本地继续使用当前配置快照执行，缓存状态和事件，连接恢复后补传。
+- 本地 YYB 或微信协议服务不可用：暂停依赖该协议的任务，并按任务策略重试。
+- 配置没有完成同步或版本不一致：禁止启动新任务。
+- 已运行任务锁定启动时的配置快照，不因云端新配置中途切换。
+
+#### 3. 技术栈选择
+
+##### 3.1 后端
+
+| 技术 | 用途 | 选择理由 |
+|---|---|---|
+| Go | 云端服务、本地 Agent | 单一可执行文件、部署简单、并发模型清晰、适合长运行服务 |
+| Go modules | 依赖管理 | 官方标准方案，便于本地和 Docker 构建 |
+| HTTP/JSON | 管理 API 和 Agent 同步 API | 调试简单、前后端和跨进程兼容性好 |
+| WebSocket 或 SSE | 状态推送 | 用于管理页面实时查看状态；具体方案按需求确定 |
+| PostgreSQL | 云端持久化 | 适合用户、设备、配置版本和同步记录 |
+| SQLite | 本地 Agent 持久化 | 本地单机部署简单，不依赖额外数据库服务 |
+| structured logging | 日志 | 统一输出 JSON 日志，便于本地和云端收集 |
+
+推荐 Go Web 框架使用轻量路由方案，例如 `chi`；ORM 是否使用由首个具体功能的查询复杂度决定，简单功能优先使用标准库数据库接口或轻量查询层。
+
+##### 3.2 前端
+
+| 技术 | 用途 |
+|---|---|
+| Vue 3 或 React | Web 管理界面 |
+| TypeScript | 前端类型约束 |
+| Vite | 开发服务器和生产构建 |
+| Pinia 或 Zustand | 页面状态管理，按最终框架选择 |
+| 原生 Fetch 或轻量 HTTP 客户端 | 调用云端 API |
+
+如果没有强制选择，建议使用 **Vue 3 + TypeScript + Vite**，原因是管理控制台开发成本低，组件和状态管理边界清晰。
+
+##### 3.3 部署与运维
+
+- Docker：云端正式部署方式。
+- Docker Compose：初期生产部署和本地容器化验证方式。
+- Nginx 或 Caddy：HTTPS、静态资源和反向代理。
+- Git：源代码、配置模板和版本记录。
+- GitHub Actions 或 GitLab CI：后期自动构建 Docker 镜像。
+
+#### 4. 工程目录
+
+建议采用一个 Git 仓库、三个可独立构建的应用：
+
+```text
+Robot/
+├─ apps/
+│  ├─ cloud-server/             # 云端 Go 管理服务
+│  │  ├─ cmd/server/             # 进程入口
+│  │  ├─ internal/               # 云端内部实现
+│  │  │  ├─ auth/                # 用户认证和权限
+│  │  │  ├─ devices/             # 设备和 Agent 管理
+│  │  │  ├─ configs/             # 配置及版本管理
+│  │  │  ├─ sync/                # Agent 同步协议
+│  │  │  ├─ events/              # 状态和事件接收
+│  │  │  ├─ storage/             # 数据库访问
+│  │  │  └─ httpapi/             # HTTP API 路由和处理器
+│  │  └─ migrations/             # 云端数据库迁移
+│  │
+│  ├─ local-agent/               # 本地 Go Agent
+│  │  ├─ cmd/agent/              # 进程入口
+│  │  ├─ internal/
+│  │  │  ├─ runtime/             # 本地生命周期和任务运行时
+│  │  │  ├─ protocols/           # 协议适配层
+│  │  │  │  ├─ yyb/              # YYB/应用宝协议客户端
+│  │  │  │  └─ wechat/           # 微信协议客户端
+│  │  │  ├─ tasks/               # 后续逐项实现的本地任务
+│  │  │  ├─ sync/                # 与云端同步
+│  │  │  ├─ cache/               # SQLite 和离线事件队列
+│  │  │  ├─ process/             # 本地协议进程管理
+│  │  │  └─ httpapi/             # 仅供本机使用的 API
+│  │  └─ data/                   # 本地运行数据，不提交 Git
+│  │
+│  └─ web/                       # Vue/React Web 前端
+│     ├─ src/
+│     │  ├─ api/                 # 云端 API 客户端
+│     │  ├─ views/               # 页面
+│     │  ├─ components/          # 通用组件
+│     │  ├─ stores/              # 前端状态
+│     │  └─ types/               # API 类型
+│     └─ public/
+│
+├─ packages/
+│  └─ contracts/                 # 云端与 Agent 的协议文档/Schema
+│     ├─ openapi/                # HTTP API 定义
+│     ├─ sync/                   # 同步消息结构
+│     └─ events/                 # 事件结构
+│
+├─ deploy/
+│  ├─ docker/
+│  │  ├─ Dockerfile.cloud       # 云端镜像
+│  │  ├─ Dockerfile.web          # 前端/Nginx 镜像
+│  │  ├─ docker-compose.yml      # 云端部署编排
+│  │  └─ .env.example            # 配置模板
+│  └─ systemd/                   # 本地 Linux Agent 可选服务文件
+
+├─ docs/                         # 架构、需求和接口文档
+├─ scripts/                      # 本地开发和构建脚本
+├─ go.mod
+├─ go.sum
+├─ Makefile 或 Taskfile.yml
+└─ README.md
+```
+
+##### 4.1 目录边界
+
+- `cloud-server` 不直接调用微信或 YYB 协议。
+- `local-agent` 不承担云端用户管理。
+- `web` 默认只调用云端 API，不直接访问本地协议端口。
+- `packages/contracts` 只存放跨应用契约，不放业务实现。
+- `data`、数据库文件、token、登录缓冲和代理密钥不得提交到 Git。
+
+#### 5. YYB 与微信协议接入位置
+
+##### 5.1 YYB 协议
+
+由 `local-agent/internal/protocols/yyb` 负责：
+
+- 启动和检查 YYB 协议服务。
+- 扫码会话和账号登录态维护。
+- 小程序 code、手机号和业务数据调用。
+- 将协议错误转换为本地 Agent 能理解的错误类型。
+
+##### 5.2 微信协议
+
+由 `local-agent/internal/protocols/wechat` 负责：
+
+- 启动和检查微信协议服务。
+- 二维码登录和 wxid 管理。
+- 微信心跳、退出和重新登录。
+- 小程序登录 code 和云函数调用。
+
+两个协议适配器应该实现统一的本地接口，但不能强行合并它们的业务码、会话字段或登录流程。协议源码的差异应保留在各自适配器内部。
+
+#### 6. 初期本地开发方式
+
+初期没有云服务器时，全部组件在本机运行：
+
+```text
+Vue/React dev server
+        |
+        v
+cloud-server（本机运行） <---- local-agent（本机运行）
+                                      |
+                                      +-- YYB 协议服务
+                                      +-- 微信协议服务
+```
+
+建议提供两种启动方式：
+
+```text
+开发模式：Go 和前端直接运行，支持断点和热更新。
+容器验证模式：Docker Compose 在本机启动 cloud-server、数据库和 Web。
+```
+
+本地开发时，云端和 Agent 使用本机 HTTPS 或 HTTP 地址；未来部署时只替换配置，不改变业务代码。
+
+#### 7. 后期 Docker 部署方式
+
+##### 7.1 推荐部署结构
+
+```text
+云服务器
+├─ Caddy/Nginx
+├─ web 容器
+├─ cloud-server 容器
+├─ PostgreSQL（容器或云数据库）
+└─ 持久化卷：数据库、备份、必要日志
+```
+
+本地 Agent 仍然运行在用户本地机器，不要求云服务器主动连接本地。Agent 主动通过 HTTPS 连接云端并保持同步。
+
+##### 7.2 发布流程
+
+```text
+本地开发
+  -> Git commit / push
+  -> CI 构建 Go 和 Web
+  -> 构建 Docker 镜像
+  -> 推送镜像仓库
+  -> 云服务器 docker compose pull
+  -> docker compose up -d
+```
+
+初期也可以在服务器直接 `git clone` 后本地构建，正式运行建议使用固定版本镜像标签，便于回滚。
+
+##### 7.3 配置与数据
+
+- Docker 镜像只包含程序和静态资源。
+- 数据库、密钥和环境变量通过 `.env`、Secret 或云数据库提供。
+- 不把生产 `.env`、数据库文件、协议凭据提交到 Git。
+- 数据目录使用 Docker volume 或外部持久化存储。
+- 云端和本地 Agent 使用独立配置，不能共用本地协议凭据。
+
+#### 8. 初始准备清单
+
+- [ ] 创建新的 Git 仓库和基础目录。
+- [ ] 确定 Web 使用 Vue 3 或 React；若无特殊要求，优先 Vue 3。
+- [ ] 初始化 Go modules 和基础构建脚本。
+- [ ] 创建 `cloud-server` 和 `local-agent` 的健康检查入口。
+- [ ] 定义 Agent 注册、配置版本和状态同步的最小契约。
+- [ ] 创建本地 Docker Compose 骨架，用于模拟云端部署。
+- [ ] 配置 Git 忽略规则，排除运行数据、密钥、数据库和日志。
+- [ ] 在具体功能提出后，再设计该功能的 API、数据表和验收标准。
+
+<a id="auth-design"></a>
+
+### 云端登录授权设计
+
+> 原始需求与设计草案。文中 PostgreSQL 为历史选择，当前使用 MySQL；管理员 API 为普通 JSON，代理商 API 使用 AES-GCM。待确认项和 API 草案需结合当前代码判断。
+
+#### 1. 文档目的与范围
+
+本文定义 `cloud-server` 的第一版管理员认证、代理商账号管理和代理商登录授权需求，作为后续 API、数据库迁移、实现和验收的依据。服务端使用 Go、Go modules、HTTP/JSON 和 PostgreSQL；管理员后台与代理商客户端是两个独立系统。
+
+第一版实现身份认证、账号状态、会话设备数量限制及审计，不实现代理商菜单权限、数据范围、业务操作权限。代理商登录后第一版不能查看业务数据；认证只证明账号身份并允许后续功能扩展。
+
+客户端与 `cloud-server` 的传输采用 HTTP，HTTP 请求体和响应体均按 JSON 封装；业务 JSON 在传输前使用 AES-GCM 加密，再以 Base64 编码放入 JSON 信封。该规则是 `cloud-server` 通用 HTTP/JSON 传输协议，适用于登录授权以及后续其他业务 API，不局限于认证模块。目标是避免普通抓包直接看到明文，不视为可抵御中间人、重放或客户端逆向的完整传输安全方案。
+
+#### 2. 术语
+
+| 术语 | 定义 |
+| --- | --- |
+| 代理商账号 | 管理员为一个代理商创建的唯一登录账号；一个代理商对应一个账号 |
+| 客户端编号 | 代理商登录时自行填写的标识，全局唯一，不预先绑定代理商 |
+| 客户端实例 ID | 客户端为每个独立运行实例生成的随机 ID，并持久化供同一实例重启后复用；同机多开实例必须各自使用不同 ID |
+| 登录会话 | 一次客户端实例成功认证后建立的服务端会话；每个活跃会话占一个设备名额 |
+| 活跃会话 | 未过期、未撤销且所属账号处于可登录状态的会话 |
+
+“设备数量”按客户端实例的活跃登录会话计算，不按物理电脑计算。因此，同一台电脑可以多开，但每个实例独立占用名额。同一实例重复登录时复用其现有名额。
+
+#### 3. 角色与能力
+
+##### 3.1 管理员
+
+- 通过管理员后台登录。
+- 创建、查看、启用、禁用、锁定、解锁、暂停、恢复、删除代理商账号。
+- 查看代理商初始密码/当前密码明文、重置密码并查看账号审计记录。
+- 查看代理商最后登录时间和 IP。
+- 代理商状态变更、密码查看/重置等敏感操作均写审计日志。
+
+管理员账号管理界面的细节（是否多管理员、角色分级、管理员自助改密/重置、注销策略）第一版需求未指定；首个管理员按第 10 节引导。实现时应避免任何未认证的管理 API。
+
+##### 3.2 代理商
+
+- 使用用户名、密码、客户端编号、客户端实例 ID 登录。
+- 只能获得认证会话；第一版不提供业务数据查询，也不能修改密码。
+- 不提供注册、密码找回、手机号/邮箱绑定、验证码、二次验证或“记住登录”开关。
+
+#### 4. 账号生命周期与规则
+
+##### 4.1 创建
+
+管理员创建账号时提交代理商名称、用户名和设备上限。系统生成 32 位随机密码。用户名不区分大小写还是区分大小写需要全系统统一；建议规范化为小写后强制唯一。代理商名称不要求唯一。设备上限必须为正整数。
+
+创建成功后仅授权管理员查看明文密码；每次明文查看必须记录查看人、时间、来源 IP 和代理商账号。密码通过线下或社交软件交付，此交付不由系统完成。
+
+##### 4.2 状态
+
+账号状态采用单一状态字段，取值：
+
+| 状态 | 可否登录 | 说明 |
+| --- | --- | --- |
+| enabled（启用） | 是 | 正常状态 |
+| disabled（禁用） | 否 | 管理员暂时禁止登录 |
+| locked（锁定） | 否 | 管理员手动锁定；输错密码不会自动锁定 |
+| suspended（暂停合作） | 否 | 暂停合作期间禁止登录 |
+| deleted（已删除） | 否 | 物理删除，不作为持久状态；删除事务完成后账号和关联数据不存在 |
+
+状态切换操作必须校验当前状态并审计。管理员禁用、锁定或暂停账号后，所有已有会话立即失效。恢复为启用后，代理商可重新登录。账号处于非启用状态时认证失败，不应泄露具体状态给未认证调用方。
+
+##### 4.3 删除
+
+删除为物理删除。删除代理商账号时，必须在同一事务中撤销/删除会话、删除该代理商关联审计日志和其他从属数据，然后删除账号。关联历史日志不保留，代理商名称和 ID 均不保留。删除后用户名可重新使用。审计系统若有外部不可变副本，也不得复制这类关联记录；第一版日志应在 PostgreSQL 内管理并遵循级联删除。
+
+#### 5. 认证与会话
+
+##### 5.1 代理商登录
+
+请求包含用户名、密码、客户端编号、客户端实例 ID。用户名和密码校验成功前不得占用设备名额。客户端编号全局唯一；编号首次成功登录时与代理商账号绑定，后续任何其他账号使用同一编号均拒绝。账号不得更改已绑定编号，除非未来增加明确的管理员解绑流程（第一版不提供）。
+
+客户端实例 ID 由客户端安全随机生成，建议 UUID v4 或等价随机 128 位标识。每个并行客户端实例必须有独立 ID，同一实例重启必须持久化复用；卸载、清数据或重新创建实例可能导致新 ID，从而视为新设备。服务端将账号 ID 与客户端实例 ID 作为会话设备唯一键。
+
+登录成功后创建有效期 7 天的会话，并返回不透明随机令牌。令牌只在响应中返回一次，数据库仅保存令牌哈希。客户端每次受保护请求通过 `Authorization: Bearer <token>` 发送。第一版不提供 refresh token；会话过期后重新登录。客户端可本地选择记住用户名、密码和客户端编号，但这属于客户端本地行为，服务端不保存登录密码明文供客户端取回。
+
+##### 5.2 设备上限与重复登录
+
+- 账号最多有 `max_devices` 个活跃实例会话。
+- 同一账号、同一客户端实例 ID 重复登录时，撤销旧会话并签发新令牌，仍只占一个名额。
+- 不同实例（包括同一电脑多开的实例）各占一个名额。
+- 达到上限时拒绝新实例登录，不踢出已有会话。
+- 过期会话不计入上限；可在登录事务中清理该账号过期会话。
+- 同一客户端实例同时发起并发登录，最终只能有一个有效会话，并且只能占一个名额。
+
+检查上限、清理过期会话、撤销同实例会话和插入新会话必须在同一 PostgreSQL 事务内串行化（例如对代理商行 `SELECT ... FOR UPDATE`）。否则并发登录可能突破设备上限。
+
+##### 5.3 会话失效
+
+所有受保护请求必须在线校验服务端会话未过期/撤销且账号当前为 enabled。账号禁用、锁定或暂停事务提交后，后续请求立即返回未授权；不允许仅依赖自包含 JWT 的过期时间。物理删除账号会删除其全部会话。代理商没有“查看/踢出设备”接口；管理员也未要求管理单个会话。
+
+#### 6. 密码与密钥管理
+
+代理商密码为系统生成的 32 位密码（字符集应采用密码学安全随机数；字符集在实现阶段固定并经测试）。数据库保存可解密密文，以满足管理员查看明文的需求。推荐使用 AES-256-GCM 等认证加密，随机 nonce 每条密码独立生成；密钥从环境变量或受控密钥管理服务注入，不写入数据库、代码仓库或日志。密文格式保存算法版本、nonce 和密文，支持未来密钥轮换。
+
+明文密码不得写入应用日志、审计详情、错误响应、数据库审计表或跟踪系统。查看密码 API 只允许已认证管理员调用，并写入 `credential_viewed` 审计事件。密码重置生成新随机密码并替换密文；在同一事务内撤销代理商所有会话，要求代理商使用新密码重新登录。重置后的密码可以再次由管理员查看，并继续记录每次查看。
+
+管理员密码不得以可逆密文保存，应使用经验证的慢哈希（如 Argon2id 或 bcrypt，按项目依赖/安全配置选定）。环境变量中的首个管理员密码只用于引导创建，初始化后不得在每次启动时覆盖数据库密码。
+
+#### 7. HTTP/JSON API 草案
+
+JSON 字段采用 `snake_case` 或项目既定风格并保持一致。管理 API 要求管理员会话，代理商 API 要求代理商会话。路径前缀可按仓库既有约定调整。所有包含业务数据的 HTTP API 使用本节统一的应用层加密信封。
+
+##### 7.0 应用层加密信封
+
+本项目已确定使用 HTTP，并在应用层加密请求体和响应体，以避免普通抓包直接读取业务 JSON。它是整个 `cloud-server` 的公共传输规则，所有模块及未来业务 API 默认适用，除非另有明确的协议例外。所有业务端点（包括登录、登出、成功响应及业务错误响应）必须使用统一信封；不得在异常路径回退为明文 JSON。HTTP 状态码仍用于粗粒度传输结果，业务错误码放在解密后的 JSON 内。健康检查等明确不包含业务数据的基础设施端点可单独约定为明文。
+
+建议信封结构：
+
+```json
+{
+  "version": 1,
+  "key_id": "<key identifier>",
+  "nonce": "<base64 nonce>",
+  "ciphertext": "<base64 ciphertext including GCM tag>"
+}
+```
+
+加密明文为 UTF-8 JSON。使用 AES-256-GCM；每条消息使用密码学安全随机生成的 12 字节 nonce，密文包含认证标签。Base64 仅用于承载二进制数据。协议版本和 `key_id` 应作为 GCM 附加认证数据（AAD），服务端严格校验版本、字段长度、Base64、nonce 长度和认证标签；解密失败统一返回不含敏感信息的协议错误。禁止 nonce 在同一密钥下重复，禁止记录明文、密钥、完整密文或令牌到普通日志。
+
+###### 密钥范围与选择
+
+- 每个客户端版本使用独立传输密钥；不同版本可以并行处于有效/过渡状态，以支持滚动升级和密钥轮换。
+- 每个代理商使用独立传输密钥，使单个代理商密钥泄露的影响范围限于该代理商。该密钥由管理员交付客户端时预置。
+- 请求信封包含 `key_id`，服务端按它查找有效密钥；密钥记录需要标注用途（客户端版本或代理商）、状态、创建/生效/失效时间和版本。密钥材料只能以服务端配置的安全密文或密钥管理服务引用保存，不存明文数据库、不进入日志。
+- 代理商密钥在账号物理删除时一并删除；代理商密码重置不自动改变传输密钥。
+- 客户端版本密钥轮换时允许明确的短期新旧密钥并行期，结束后撤销旧密钥。服务端拒绝未知、撤销或未生效的 `key_id`。
+- Windows 桌面客户端首次启动提供“导入代理商配置”操作。管理员交付的代理商配置文件包含代理商标识、代理商密钥 ID 和密钥；客户端导入后保存至 `%LOCALAPPDATA%\\<厂商>\\<客户端>\\`，将密钥使用 Windows DPAPI `CurrentUser` 范围保护后落盘，不长期保存明文配置。导入完成后提示用户妥善删除原始配置文件。DPAPI 保护静态文件，不防止同一 Windows 用户或被控制的客户端进程读取密钥。
+- 同一代理商在多开的客户端实例之间可共用该代理商传输密钥；每个实例仍必须持有独立且持久化的 `client_instance_id`，用于设备名额计算。客户端版本密钥可由同一客户端版本的安装包预置，但代理商密钥按代理商隔离。
+- 客户端程序内预置密钥可被逆向提取，因此该方案只满足“普通抓包不直接看到明文”的目标。它不提供可信服务端身份验证，不防止可主动修改流量的中间人，也不防止客户端运行环境读取加解密前后的明文。
+
+**建议的密钥选择时序**：登录前客户端尚未认证代理商身份，因此登录请求和登录响应使用客户端版本密钥；登录成功后，服务端在加密响应中给出已配置的代理商 `key_id`，客户端后续请求和响应切换到该代理商密钥。代理商密钥在导入配置时已预置于客户端，登录响应不传递密钥材料。管理员 API 使用独立管理端密钥配置，不得复用代理商密钥。所有端点共用同一信封格式和加密算法，但按调用方/阶段选择不同密钥。密钥轮换期间可在配置允许下同时接受新旧密钥。
+
+HTTP 不提供 TLS 的传输完整性/服务端认证；AES-GCM 只认证知道所选密钥的一方构造的消息，若客户端版本密钥被提取，攻击者仍可构造有效消息。协议不应宣称可抵抗主动中间人攻击。请求重放防护（时间戳、请求随机数/请求 ID 和去重窗口）尚未纳入已确认需求，若需抵抗重放应另行定义。
+
+此前本节通用说明中的“所有 API 使用 HTTPS”应理解为通用安全建议，不适用于本项目当前已确认的 HTTP 部署决定；HTTP 上线应限于用户明确接受的普通抓包保密目标。
+
+##### 7.1 管理员认证
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | `/api/admin/v1/auth/login` | 管理员用户名密码登录，返回管理员会话 |
+| POST | `/api/admin/v1/auth/logout` | 撤销当前管理员会话 |
+| GET | `/api/admin/v1/auth/me` | 获取当前管理员身份 |
+
+管理员会话有效期和管理员账号管理策略尚未由需求指定；实现默认应采用服务端可撤销会话，具体有效期列为待确认项。
+
+##### 7.2 代理商管理
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | `/api/admin/v1/agents` | 创建代理商，返回账号摘要及可查看凭据的提示；密码不应在普通列表响应中返回 |
+| GET | `/api/admin/v1/agents` | 分页/筛选代理商 |
+| GET | `/api/admin/v1/agents/{agent_id}` | 查看代理商详情、状态、设备上限、最后登录时间/IP |
+| POST | `/api/admin/v1/agents/{agent_id}/credential/view` | 查看当前明文密码并记审计 |
+| POST | `/api/admin/v1/agents/{agent_id}/credential/reset` | 重置密码并撤销所有代理商会话 |
+| PATCH | `/api/admin/v1/agents/{agent_id}/status` | 启用、禁用、锁定、解锁、暂停或恢复 |
+| PATCH | `/api/admin/v1/agents/{agent_id}/device-limit` | 修改设备上限；低于当前会话数时保留现有会话但拒绝新增，或由管理员先另行处理（待确认，建议保留现有会话） |
+| DELETE | `/api/admin/v1/agents/{agent_id}` | 物理删除账号、会话及关联审计日志 |
+| GET | `/api/admin/v1/agents/{agent_id}/audit-events` | 查看尚未因账号删除而清除的账号审计事件 |
+
+所有写操作应支持幂等性或明确重试语义。状态修改应使用明确目标状态而不是“toggle”。列表接口需分页，避免返回密码、令牌或密文。
+
+##### 7.3 代理商认证
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | `/api/agent/v1/auth/login` | 使用用户名、密码、客户端编号和客户端实例 ID 登录 |
+| POST | `/api/agent/v1/auth/logout` | 撤销当前会话 |
+| GET | `/api/agent/v1/auth/me` | 获取当前代理商账号和客户端会话摘要 |
+
+成功登录响应返回访问令牌、过期时间、代理商 ID/名称和客户端编号。未经授权的业务 API 第一版不定义。
+
+##### 7.4 错误语义
+
+- `400`：字段格式错误。
+- `401`：凭据错误、会话无效/过期/撤销；登录凭据错误统一文案。
+- `403`：账号状态不允许登录或当前角色无权访问；登录阶段对外可统一为认证失败。
+- `409`：用户名/客户端编号冲突、设备上限已满、状态冲突。
+- `429`：请求速率限制触发。
+- `500`：内部错误，不包含密钥、明文密码、SQL 或令牌。
+
+#### 8. 数据模型草案
+
+字段类型为 PostgreSQL 草案，实际命名遵循仓库迁移规范。
+
+##### 8.1 `admin_users`
+
+- `id UUID PRIMARY KEY`
+- `username TEXT NOT NULL UNIQUE`
+- `password_hash TEXT NOT NULL`
+- `status TEXT NOT NULL`（至少 enabled/disabled）
+- `created_at`, `updated_at TIMESTAMPTZ NOT NULL`
+
+##### 8.2 `admin_sessions`
+
+- `id UUID PRIMARY KEY`
+- `admin_user_id UUID NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE`
+- `token_hash BYTEA NOT NULL UNIQUE`
+- `expires_at TIMESTAMPTZ NOT NULL`
+- `revoked_at TIMESTAMPTZ NULL`
+- `created_at TIMESTAMPTZ NOT NULL`
+- 登录 IP、User-Agent 可按审计要求保存，避免无必要的设备指纹采集。
+
+##### 8.3 `agents`
+
+- `id UUID PRIMARY KEY`
+- `name TEXT NOT NULL`
+- `username TEXT NOT NULL UNIQUE`（按统一大小写规范化）
+- `password_ciphertext BYTEA NOT NULL`
+- `password_nonce BYTEA NOT NULL`，可合并进带版本的密文封装字段
+- `password_key_version TEXT NOT NULL`
+- `status TEXT NOT NULL CHECK (...)`
+- `max_devices INTEGER NOT NULL CHECK (max_devices > 0)`
+- `last_login_at TIMESTAMPTZ NULL`
+- `last_login_ip INET NULL`
+- `created_by UUID NULL REFERENCES admin_users(id) ON DELETE SET NULL`
+- `created_at`, `updated_at TIMESTAMPTZ NOT NULL`
+
+##### 8.4 `client_registrations`
+
+用于保证客户端编号全局唯一且绑定首次成功使用的代理商。
+
+- `client_number TEXT PRIMARY KEY`
+- `agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE`
+- `created_at TIMESTAMPTZ NOT NULL`
+
+客户端编号格式/长度未确认，实现前需定义校验规则。客户端编号注册与会话创建应同一事务提交，避免失败登录占用编号。
+
+##### 8.5 `agent_sessions`
+
+- `id UUID PRIMARY KEY`
+- `agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE`
+- `client_instance_id UUID NOT NULL`
+- `client_number TEXT NOT NULL REFERENCES client_registrations(client_number)`
+- `token_hash BYTEA NOT NULL UNIQUE`
+- `created_at TIMESTAMPTZ NOT NULL`
+- `expires_at TIMESTAMPTZ NOT NULL`
+- `revoked_at TIMESTAMPTZ NULL`
+- `login_ip INET NOT NULL`
+- `user_agent TEXT NULL`
+- 活跃实例唯一约束建议为 `UNIQUE (agent_id, client_instance_id) WHERE revoked_at IS NULL`，但过期行必须在创建新会话前撤销，以便唯一约束生效。
+- 索引：`(agent_id, expires_at)`、`(agent_id, revoked_at)`。
+
+##### 8.6 `audit_events`
+
+- `id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY`
+- `actor_type TEXT NOT NULL`（admin/agent/system）
+- `actor_admin_id UUID NULL REFERENCES admin_users(id) ON DELETE SET NULL`
+- `agent_id UUID NULL REFERENCES agents(id) ON DELETE CASCADE`
+- `event_type TEXT NOT NULL`
+- `occurred_at TIMESTAMPTZ NOT NULL`
+- `source_ip INET NULL`
+- `client_number TEXT NULL`
+- `client_instance_id UUID NULL`
+- `result TEXT NOT NULL`（success/failure）
+- `details JSONB NOT NULL DEFAULT '{}'`
+- 禁止在 `details` 写入密码、密码密文、会话令牌或密钥。
+- `agent_id ON DELETE CASCADE` 确保物理删除代理商时其关联日志同步清除。
+- 登录失败可按已知代理商 ID 关联；未知用户名失败事件只能保留非识别性聚合信息，是否记录及保留期需由运维策略确定。
+
+#### 9. 审计事件
+
+至少记录：
+
+| 事件 | 必要信息 |
+| --- | --- |
+| `agent_created` | 管理员、代理商 ID、名称、用户名、设备上限、时间、来源 IP |
+| `credential_viewed` | 查看管理员、代理商 ID、时间、来源 IP；不记录密码 |
+| `credential_reset` | 操作管理员、代理商 ID、时间、来源 IP；不记录新密码 |
+| `agent_status_changed` | 操作管理员、旧/新状态、原因（若有）、时间、来源 IP |
+| `device_limit_changed` | 操作管理员、旧/新上限、时间、来源 IP |
+| `agent_deleted` | 删除事件与账号删除必须在同一事务且不保留代理商关联日志；故删除审计不能留在被级联清除的同一审计表中。若必须审计删除操作，应只保留不含代理商名称/ID/用户名的匿名聚合事件，保留策略待确认 |
+| `agent_login_succeeded` | 代理商 ID、客户端编号、实例 ID、时间、来源 IP |
+| `agent_login_failed` | 可识别时代理商 ID、失败类别（不含秘密）、客户端编号（若提交）、时间、来源 IP |
+| `agent_logout` | 代理商 ID、会话/实例、时间、来源 IP |
+| `admin_login_succeeded/failed` | 管理员 ID（失败时可为空）、时间、来源 IP、失败类别 |
+
+代理商删除后不保留其审计日志，故删除事件若也要被审计，必须明确采用匿名化且不含代理商 ID/名称的独立运维事件；当前需求选择“关联日志不保留”，匿名删除指标属于待确认项。审计日志访问本身也应受管理员认证保护。
+
+最后登录时间和 IP 只在登录成功时更新。失败登录不修改该字段。
+
+#### 10. 首个管理员初始化与配置
+
+首个管理员通过环境变量引导创建，例如：
+
+```text
+ADMIN_BOOTSTRAP_USERNAME
+ADMIN_BOOTSTRAP_PASSWORD
+```
+
+启动或迁移初始化时，仅当管理员表为空且两项配置均有效时创建首个管理员，密码写慢哈希。若管理员表非空，不得覆盖现有账号。若管理员表为空但缺少变量，管理 API 应保持不可用并报明确启动错误/健康检查未就绪，避免开放无认证后台。初始化过程需要数据库事务和唯一约束保证并发启动安全。
+
+代理商密码加密密钥通过独立环境变量或密钥服务注入，例如 `AGENT_CREDENTIAL_ENCRYPTION_KEY`；不得与管理员密码共用。密钥必须可备份并具有轮换版本策略。环境变量的确切名称、密钥编码及部署密钥托管方式在运维配置阶段确定。
+
+#### 11. 安全、隐私与可靠性要求
+
+- 本项目按已确认方案使用 HTTP，并依赖通用 AES-GCM 信封避免普通抓包读取明文；该方式没有 HTTPS 的服务端身份认证和传输层保护，不得对外宣称可防主动中间人攻击。
+- 密码和会话令牌使用密码学安全随机源；令牌在数据库中仅存哈希。
+- 登录端点和管理员认证端点应设置按来源 IP、用户名/账号的速率限制；输错密码不自动锁号。限流阈值由部署配置确定，并避免将代理商锁定伪装为账号状态变更。
+- 登录失败响应对未知用户、错误密码和不可登录状态采用统一错误文案，减少账号枚举。
+- 管理员密码查看、重置、状态管理、删除 API 需要 CSRF 防护（若使用 Cookie 会话）或严格 Bearer 令牌策略；管理后台应设置安全 Cookie、CORS allowlist 和 CSP。
+- 对代理商账号名、客户端编号、IP 等个人/业务标识设置最小采集、访问控制和明确保留策略。
+- 设备计数及状态变更需要数据库事务；并发登录与状态禁用必须有清楚的事务顺序。若禁用事务先提交，则不能再创建会话；若登录事务先完成，后续禁用必须撤销该会话。
+- 所有 API 输入做长度、格式及 JSON 大小校验；SQL 使用参数化查询。
+
+#### 12. 验收标准
+
+1. 管理员可通过配置的首个管理员账号登录；配置不会在后续重启中重置数据库密码。
+2. 管理员可创建代理商账号，系统产生 32 位随机密码，重复用户名被拒绝。
+3. 数据库中代理商密码为不可直接阅读的认证密文；授权管理员可查看明文且每次查看均有审计事件，日志不含密码。
+4. 代理商使用有效凭据和全局唯一客户端编号登录；客户端编号绑定后不能被另一个代理商使用。
+5. 同一代理商同一客户端实例重复登录只占一个名额；同机不同实例分别占名额；达到上限时新实例被拒绝，已有会话不受影响。
+6. 并发登录压力下设备上限不被突破；过期会话不占用名额。
+7. 账号禁用、锁定或暂停后，已有会话的下一次 API 请求立即失败；密码重置也撤销全部现有会话。
+8. 登录失败不会自动锁定账号，失败与成功事件按规则审计；成功登录更新最后登录时间和 IP。
+9. 账号物理删除后，账号、会话、客户端编号绑定及代理商关联审计日志均被删除，用户名可重新创建。
+10. 代理商不能修改密码，第一版代理商身份不能读取业务数据，权限配置 API 不存在。
+
+#### 13. 待实现前确认项
+
+以下不改变已确认的核心需求，但需要在接口/部署实现前定案：
+
+1. 客户端编号的字符集、长度、大小写规范，以及更换/解绑流程；当前确定全局唯一并绑定首次成功登录的代理商。
+2. 用户名大小写规范；建议大小写不敏感。
+3. 管理员会话有效期、多个管理员及管理员自助管理功能；首个管理员环境变量初始化方式已确认。
+4. 修改设备上限低于当前活跃会话数时的行为；建议保留已有会话，直至会话退出/过期，仅拒绝新增登录。
+5. 未知用户名的失败登录事件是否落库及保留时长；账号删除后关联事件按要求全部删除。
+6. 删除事件是否需要匿名化保留。若“历史日志不保留”覆盖删除事件，则无需保留；若需要统计删除行为，应新增不含账号标识的匿名运维指标。
+7. 密钥环境变量名称、服务端密钥托管、备份及轮换流程；客户端版本密钥和管理员管理端密钥的生成/交付/轮换细节。
+
+<a id="web-design"></a>
+
+### Web 管理端设计
+
+> 历史设计，包含已被后续实现替代的待实现项。当前支持 cfg 导出及移动端布局；管理员 API 使用普通 JSON，无浏览器传输密钥，旧加密请求方案不再适用。
+
+日期：2026-11-02。状态：设计稿，作为后续实现与联调基线；本文不表示功能已经实现。
+
+#### 1. 目标与范围
+
+管理员通过浏览器登录，完成代理商账号创建、凭据查看与重置、状态管理、设备上限设置、删除及关联审计查询。Web 管理端位于 `apps/cloud-server/admin-web`，作为 `cloud-server` 的前端源码，与 Go 服务一起构建为单个镜像并由同一服务进程提供；Docker Compose 部署编排由 `apps/cloud-server` 管理。数据库采用当前已选定的 MySQL 8.0。
+
+第一版包含登录、代理商列表、创建弹窗、详情抽屉和详情内审计记录。暂不实现全局审计页面、多管理员角色管理、代理商权限配置、代理商业务数据或 Windows 客户端配置导入。代理商独立密钥配置下载依赖服务端密钥管理完成，本版不展示尚不可用的下载按钮。
+
+#### 2. 技术与组织
+
+- Vue 3 + TypeScript + Vite + Vue Router；当前弹窗和管理页面组件使用轻量自定义实现，避免额外 UI 库依赖。
+- 组件局部状态处理弹窗与表单；独立认证模块管理登录身份和 Token。
+- 公共 API 客户端统一完成认证、超时和错误映射；管理员后台接口使用普通 JSON，请求不再进行 AES 信封包装；页面不直接使用裸 fetch。
+- Go 服务端提供前端静态资源和 `/api/` 接口，浏览器通过同源地址访问，不额外部署 Nginx 或 Web 容器。
+
+建议目录：
+
+```text
+apps/cloud-server/admin-web/
+  src/
+    api/                 # API 客户端、认证和代理商接口
+    crypto/              # AES-GCM 信封与互操作测试
+    auth/                # 会话持久化与恢复
+    router/
+    layouts/             # AdminLayout
+    views/               # LoginView、AgentsView
+    components/agents/   # 创建、详情、密码展示、删除确认、审计
+    types/
+    styles/
+  Dockerfile
+  package.json
+```
+
+#### 3. 信息架构与布局
+
+路由 `/admin/login` 为登录页；`/admin/agents` 为管理页；根路径不展示后台内容。未经认证访问管理路由时跳转登录页；登录成功进入代理商列表。详情使用 `/admin/agents?agent_id=<UUID>`，便于刷新和直接定位。
+
+桌面布局采用约 220px 左侧菜单、56px 顶栏，主内容留白约 24px。侧栏展示 Robot 管理后台与“代理商管理”；顶栏展示当前页、管理员用户名、退出入口。第一版不放无功能的菜单或统计卡片。
+
+整体采用扁平、克制的 Apple 系统视觉：系统字体、浅灰页面背景、白色内容面板、低饱和蓝色强调、细分隔线和轻阴影。启用用绿色，禁用用中性色，锁定用红色，暂停合作用橙色，并始终显示文字，不仅靠颜色辨认。使用 14px 主字号；表格行高约 48px。所有创建、编辑、密码展示和确认交互均使用网页中央的自定义弹窗，不调用浏览器原生 `alert`、`confirm` 或 `prompt`；弹窗遮罩、焦点、键盘关闭及危险确认保持一致。窄屏侧栏折叠、表格可横向滚动，弹窗适配视口。
+
+列表布局草图：
+
+```text
+┌──────────────┬──────────────────────────────────────────────┐
+│ Robot        │ 代理商管理                     admin · 退出  │
+│              ├──────────────────────────────────────────────┤
+│ 代理商管理   │ 代理商管理                      [创建代理商] │
+│              │ [名称或用户名] [状态] [查询] [重置] [刷新]   │
+│              │ 名称 用户名 状态 活跃/上限 最后登录 IP 操作  │
+│              │ ……                                  [详情]  │
+│              │ 共 N 条                   每页20条  上页 下页│
+└──────────────┴──────────────────────────────────────────────┘
+```
+
+#### 4. 登录与会话
+
+登录页仅含用户名、密码、登录按钮。密码可临时切换可见；不自动保存管理员密码，不提供注册或找回密码。提交中禁用重复提交，凭据错误显示统一提示，网络错误允许重试。
+
+Token 与过期时间保存在 `sessionStorage`，刷新后通过 `/auth/me` 验证服务端会话，再展示受保护页面。关闭标签页结束前端会话存储，但服务端会话仍受自身到期规则控制；复制标签页等浏览器行为可能复制初始 sessionStorage，不能把关闭标签页视为服务端撤销。
+
+退出调用登出接口撤销会话，随后清除本地 Token、身份及密码展示。登出网络失败时仍清除本地状态，并提示服务端会话可能尚未撤销。会话过期或服务端返回 401 时清理状态、关闭敏感弹窗并跳转登录，多个并发 401 只提示一次。403 显示权限错误，不与登录过期混同。
+
+#### 5. 代理商管理
+
+##### 5.1 列表
+
+支持名称或用户名关键字搜索、状态筛选、分页、刷新；筛选后回到第一页。默认按创建时间倒序并使用 ID 作为稳定次排序；每页 20 条，可选 50/100 条。
+
+展示名称、用户名、状态、活跃会话数/设备上限、最后登录时间、最后登录 IP 和详情入口。无登录记录显示“从未登录”及“—”。显示时间转换为浏览器本地时间，提示当前时区；API 时间统一 RFC3339 UTC，避免 MySQL 时区歧义。
+
+首次加载展示加载状态，无数据展示创建入口，筛选无匹配结果展示清除筛选入口。请求失败显示重试，不伪装为空列表。操作成功后刷新当前页，删除本页最后一条时退到有效页码。避免旧搜索响应覆盖新请求结果。
+
+##### 5.2 创建代理商
+
+表单包含代理商名称、用户名和设备数量上限。密码由服务端生成，前端不提供密码输入框。名称必填；用户名与服务端一致，统一小写，当前规则为 3–64 个英文小写字母、数字、下划线、点或连字符；设备上限当前为 1–10000 整数，表单建议初值为 1。
+
+提交成功关闭创建表单、刷新列表并展示用户名与生成的 32 字符密码，支持分别复制和一次复制交付信息。提示密码由管理员自行交付，关闭窗口后移除前端明文。管理员后续仍可按权限再次查看，不能宣称密码仅展示一次。创建失败保留输入；用户名重复显示字段级错误。写请求不自动重试，避免重复创建或重置密码。
+
+##### 5.3 详情抽屉
+
+“基本信息”和“审计记录”两个页签。基本信息含名称、用户名、账号 ID、状态、创建时间、最后登录时间/IP、活跃设备数和上限。
+
+设备上限可编辑；调低至当前活跃会话数以下时提示现有会话保留，新实例登录被拒绝，同一实例重新登录仍应复用名额。代理商名称与用户名编辑不在本版范围。
+
+状态操作发送明确目标值：enabled/disabled/locked/suspended。启用后可禁用、锁定或暂停；非启用状态提供“恢复启用”。操作需确认，文案明确禁用、锁定或暂停会撤销全部现有会话，恢复启用不会恢复旧会话。服务端原子校验状态与撤销，前端不模拟踢出成功。
+
+##### 5.4 敏感操作
+
+| 操作 | 交互及结果 |
+| --- | --- |
+| 查看密码 | 确认后才发 API 请求；成功后在独立弹窗显示并支持复制，关闭或退出登录即移除明文 |
+| 重置密码 | 确认现有会话立即失效；成功后展示新密码；失败不显示成功状态 |
+| 删除代理商 | 输入完全匹配的用户名后启用删除按钮；明确提示账号、会话、客户端编号关联及历史日志永久删除，无法恢复 |
+
+敏感值不进入 URL、sessionStorage、控制台或遥测。复制失败时提供手工选择文本的方式；普通 HTTP 页面中剪贴板 API 可能不可用。弹窗支持键盘操作，打开时聚焦标题或首个字段，关闭后恢复焦点。所有表单和确认按钮在请求期间防重复提交。
+
+##### 5.5 关联审计
+
+详情中按时间倒序分页展示：事件、操作人、结果、时间、来源 IP、客户端编号和详情摘要。支持按事件类型与成功/失败筛选。密码等秘密不进入详情。账号已删除后关闭抽屉并提示不存在，不展示缓存的历史日志。
+
+#### 6. 公共请求规范
+
+管理员后台接口使用普通 JSON 请求和响应，并通过 Bearer Token 认证。代理商协议和数据库凭据加密继续使用现有 AES-GCM 信封。
+
+沿用通用 AES-256-GCM JSON 信封：`version`、`key_id`、`nonce`、`ciphertext`。32 字节密钥由 Base64 解码得到，nonce 为每条消息独立的 12 随机字节，GCM 标签为 128 位并追加到密文尾部；nonce、密文使用标准 Base64。AAD 必须精确采用现有 Go 实现的 UTF-8 字符串 `robot-http-json:1:<key_id>`，与其他格式不互通。
+
+管理员后台使用普通 JSON 请求和响应，不向浏览器注入传输密钥。管理员身份通过 Bearer Token 验证；代理商协议继续使用服务端配置的传输密钥。
+
+浏览器原生 `crypto.subtle` 限制在安全上下文，`http://localhost` 通常可用，普通远程 HTTP 地址不满足要求。本项目已确定使用 HTTP，因此加密适配层须提供经过互操作测试的浏览器 AES-GCM 库实现，并使用浏览器密码学随机源，不使用 Math.random。具体依赖在实现时确定并锁定版本，不自行实现 AES。环境不支持所需能力时阻止登录并显示配置错误，不降级为明文。
+
+当前接口中 GET 无请求体；不向 GET 强塞加密请求体，因为浏览器 fetch 不支持这种使用方式。查询条件涉及业务数据，列表与审计新增 POST 查询端点，以加密 JSON 传参；GET 身份/详情保留无请求体、加密响应。其余写请求发送加密 JSON，登出、查看密码、重置密码、删除即使没有参数，也发送加密的 `{}` 并要求服务端验证。
+
+请求通过 `Authorization: Bearer <token>` 携带令牌。HTTP 上该请求头、URL、路径及状态码仍可被抓包看到；本版约定只加密业务体，不宣称令牌或 HTTP 元数据已被保护。若要连令牌一起加密，需单独改动公共协议及全部调用方。
+
+响应内层统一为 `{code,message,data}`。无密钥可解密的损坏信封允许 HTTP 协议错误且无业务体；已识别有效密钥的业务错误使用加密信封。前端区分网络/超时、协议解密错误、业务错误、401 与 403，不把任何错误内容直接作为 HTML 渲染。请求超时建议 15 秒，写操作超时提示结果可能已生效，先刷新核实。
+
+#### 7. API 对接与后端补齐
+
+下表为目标契约，新增端点尚未实现：
+
+| 功能 | 接口 | 需要补齐 |
+| --- | --- | --- |
+| 登录/退出/身份 | POST `/api/admin/v1/auth/login`、POST `/auth/logout`、GET `/auth/me`（后二者沿用同一认证前缀） | Token 写入与读取使用同一哈希规则；退出验证信封及数据库执行结果 |
+| 列表查询 | POST `/api/admin/v1/agents/query` | 新增加密搜索、状态、分页；返回活跃数、总数 |
+| 创建 | POST `/api/admin/v1/agents` | 返回凭据需记录披露审计，操作人可追溯 |
+| 详情 | GET `/api/admin/v1/agents/{id}` | 增加 created_at、active_devices；校验 ID |
+| 查看/重置密码 | POST `/api/admin/v1/agents/{id}/credential/view`、`/credential/reset` | 信封验证；查看审计写入失败时不返回密码；重置原子撤销并审计 |
+| 状态/上限 | PATCH `/api/admin/v1/agents/{id}/status`、`/device-limit` | 上限事务更新、旧值审计，错误不得当作成功 |
+| 删除 | DELETE `/api/admin/v1/agents/{id}` | 验证空对象信封，正确处理错误与 MySQL 级联外键顺序 |
+| 审计查询 | POST `/api/admin/v1/agents/{id}/audit-events/query` | 新增加密分页和筛选，操作人、客户端信息完整返回 |
+
+列表查询内层请求：
+
+```json
+{"keyword":"示例","status":"enabled","page":1,"page_size":20}
+```
+
+响应 data：
+
+```json
+{
+  "items": [{"id":"UUID","name":"示例代理商","username":"agent_001","status":"enabled","active_devices":2,"max_devices":5,"last_login_at":null,"last_login_ip":null,"created_at":"2026-11-02T00:00:00Z"}],
+  "total":1,
+  "page":1,
+  "page_size":20
+}
+```
+
+active_devices 定义为未撤销且未过期的实例会话数。审计查询同样返回 items/total/page/page_size。筛选值、页码、页大小由服务端校验，page_size 最大 100。SQL 搜索使用参数绑定，排序和字段不可由客户端拼接。
+
+联调前必须修复当前已发现的问题：签发 Token 哈希的是随机原始字节，而鉴权哈希的是编码后的 Token 字符串；二者需要统一，否则管理员登录成功后仍无法访问列表。AES-GCM 解密前也必须校验 nonce 长度，防止错误输入触发 panic。数据库错误、审计失败和事务执行结果不可忽略。
+
+#### 8. Docker 部署与配置
+
+现有 MySQL + cloud-server Compose 只需运行数据库和服务端。根 Dockerfile 在一个镜像构建过程中先用 Node 构建 `admin-web`，再构建 Go 服务端并将静态资源复制到镜像。Go 服务端同时提供 Web 页面和 `/api/`；浏览器通过 `http://localhost:8080` 访问，SPA 路由刷新回退到 `index.html`。
+
+运行时配置使用 API 相对前缀，不包含管理员传输密钥；管理员后台 API 使用普通 JSON。构建上下文通过 `.dockerignore` 排除 `.env`、node_modules、dist 和本地秘密。现有数据库密码加密密钥必须持久保存，重启不能重新随机生成，否则数据库历史密码无法解密。
+
+Vite 本地开发代理 `/api/`，与 Docker 同源路径一致。上线使用 Compose `up --build -d` 重建，不把开发服务器作为生产入口。新增后的访问地址和命令同步进 README 与 DOCKER_COMMANDS。
+
+#### 9. 验证与交付标准
+
+1. Go 与浏览器针对固定测试密钥、nonce、AAD、中文 JSON 双向解密互通；标签、nonce、版本或密钥错误时拒绝消息。
+2. 实际 MySQL 环境完成管理员登录、刷新恢复、退出、会话失效跳转全链路，不以模拟登录代替联调。
+3. 代理商创建、重复用户名、列表筛选分页、详情、活跃数、密码查看/重置、状态与设备上限均正确。
+4. 密码重置与禁用后代理商旧会话失效；删除后账号、关联日志被删除且用户名可复用。
+5. 在加载、空数据、服务端失败、网络超时、快速重复点击、旧请求迟到时保持可理解的状态。
+6. 敏感弹窗关闭、退出、会话到期时清理明文；审计可追溯操作人且不含密码或 Token。
+7. Docker Compose 构建并启动后，可通过浏览器实际访问和执行核心流程；普通 HTTP 加密路径必须验证，不能只在 localhost 原生 Web Crypto 下测试。
+8. 桌面页面、窄屏、键盘焦点与确认交互经过实际浏览器验证，前端类型检查和生产构建通过。
+
+#### 10. 实施顺序
+
+先修复认证/数据库与信封错误处理，补齐查询契约和联调测试；再实现认证与布局；接着完成代理商表格、创建和详情操作；最后接入审计、将前端与 Go 服务整合为单个 Docker 镜像、浏览器端到端验证并更新运行文档。
+
+#### 11. 参考
+
+- [MDN SubtleCrypto：安全上下文限制](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto)
+- [MDN Secure contexts：localhost 与普通 HTTP 的区别](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Secure_Contexts)
+

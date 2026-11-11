@@ -51,7 +51,13 @@ func (s *Service) SaveTaskSeats(id int64, mode string, selected []string) error 
 	if err := s.requireTaskSession(); err != nil {
 		return err
 	}
-	return s.tasks.SaveSeats(id, mode, selected)
+	err := s.tasks.SaveSeats(id, mode, selected)
+	if err != nil {
+		if logErr := s.tasks.AppendLog(id, "error", "座位要求保存失败，请重试；原配置保留"); logErr != nil {
+			s.log.Warn("task log persistence failed")
+		}
+	}
+	return err
 }
 func (s *Service) DeleteTask(id int64) error {
 	s.mu.Lock()
@@ -63,6 +69,9 @@ func (s *Service) DeleteTask(id int64) error {
 		ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 		defer cancel()
 		if err := s.protocols.DeleteTask(ctx, id); err != nil {
+			if logErr := s.tasks.AppendLog(id, "error", "删除任务失败：协议账号退出未确认，请启动所属协议后重试"); logErr != nil {
+				s.log.Warn("task log persistence failed")
+			}
 			return err
 		}
 	}
