@@ -18,7 +18,9 @@ func (s *Service) EnableProtocols() error {
 			s.log.Warn("task log persistence failed")
 		}
 	}
+	s.mu.Lock()
 	s.protocols = m
+	s.mu.Unlock()
 	return nil
 }
 func (s *Service) ProtocolProxy(kind string) (string, error) {

@@ -13,7 +13,7 @@ import (
 
 func TestAgentNumberSwitchIsAtomic(t *testing.T) {
 	t.Setenv("AGENT_TRANSPORT_KEY_ID", "client-v1")
-	for _, mode := range []string{"success", "same-agent-other-instance", "device-limit", "audit-failure"} {
+	for _, mode := range []string{"success", "config-missing", "config-invalid", "config-db-failure", "same-agent-other-instance", "device-limit", "audit-failure"} {
 		t.Run(mode, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			if err != nil {
@@ -69,6 +69,18 @@ func TestAgentNumberSwitchIsAtomic(t *testing.T) {
 					} else {
 						audit.WillReturnResult(sqlmock.NewResult(1, 1))
 						mock.ExpectCommit()
+						config := mock.ExpectQuery("SELECT c.device_type,c.revision,t.revision,t.template").WithArgs(id)
+						raw, _ := businessDefaults.ReadFile("business_templates/windows.json")
+						switch mode {
+						case "config-missing":
+							config.WillReturnRows(sqlmock.NewRows([]string{"device", "config_revision", "template_revision", "template"}).AddRow(nil, nil, nil, nil))
+						case "config-invalid":
+							config.WillReturnRows(sqlmock.NewRows([]string{"device", "config_revision", "template_revision", "template"}).AddRow("ios", 1, 1, `{}`))
+						case "config-db-failure":
+							config.WillReturnError(http.ErrAbortHandler)
+						default:
+							config.WillReturnRows(sqlmock.NewRows([]string{"device", "config_revision", "template_revision", "template"}).AddRow("windows", 1, 2, raw))
+						}
 					}
 				}
 			}
@@ -85,8 +97,27 @@ func TestAgentNumberSwitchIsAtomic(t *testing.T) {
 			if json.Unmarshal(w.Body.Bytes(), &response) != nil {
 				t.Fatal("response not encrypted")
 			}
-			if _, err := s.keys.Open(response); err != nil {
+			decoded, err := s.keys.Open(response)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if want == 200 {
+				var result struct {
+					Data struct {
+						Config businessSnapshot `json:"business_config"`
+					} `json:"data"`
+				}
+				if err := json.Unmarshal(decoded, &result); err != nil {
+					t.Fatal(err)
+				}
+				c := result.Data.Config
+				if mode == "success" {
+					if !c.Ready || c.Template == nil || c.TemplateRevision != 2 || c.DeviceType != "windows" {
+						t.Fatalf("missing ready snapshot: %+v", c)
+					}
+				} else if c.Ready || c.ErrorCode == "" || c.Template != nil {
+					t.Fatalf("unsafe error snapshot: %+v", c)
+				}
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)

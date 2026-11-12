@@ -30,10 +30,11 @@ type runtimeRecord struct {
 	Created      uint64
 }
 type Binding struct {
-	Protocol string  `json:"protocol"`
-	Account  Account `json:"account"`
-	Status   string  `json:"status"`
-	Paused   bool    `json:"paused"`
+	Generation string  `json:"generation,omitempty"`
+	Protocol   string  `json:"protocol"`
+	Account    Account `json:"account"`
+	Status     string  `json:"status"`
+	Paused     bool    `json:"paused"`
 }
 type Attempt struct {
 	ID        string    `json:"id"`

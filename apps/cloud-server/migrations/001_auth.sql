@@ -93,3 +93,17 @@ INSERT IGNORE INTO client_instance_bindings(client_instance_id,agent_id,client_n
 SELECT client_instance_id,agent_id,client_number FROM agent_sessions
 WHERE revoked_at IS NULL AND expires_at>CURRENT_TIMESTAMP(6)
 ORDER BY created_at DESC,id DESC;
+CREATE TABLE IF NOT EXISTS business_device_templates (
+    device_type VARCHAR(16) PRIMARY KEY,
+    template JSON NOT NULL,
+    revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS agent_business_configs (
+    agent_id CHAR(36) PRIMARY KEY,
+    device_type VARCHAR(16) NOT NULL,
+    revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    CONSTRAINT fk_business_config_agent FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+) ENGINE=InnoDB;

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
+	"robot/apps/local-agent/internal/business"
 	"robot/apps/local-agent/internal/cloud"
 	"robot/apps/local-agent/internal/protocols"
 	"robot/apps/local-agent/internal/store"
@@ -42,21 +43,25 @@ type State struct {
 	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
-	mu        sync.Mutex
-	store     *store.Store
-	root      string
-	enc       map[string][]byte
-	sign      map[string]ed25519.PublicKey
-	config    *protocol.Config
-	client    *cloud.Client
-	session   *cloud.Session
-	state     State
-	ctx       context.Context
-	cancel    context.CancelFunc
-	done      chan struct{}
-	log       *slog.Logger
-	tasks     *tasks.Service
-	protocols *protocols.Manager
+	businessWG     sync.WaitGroup
+	businessClient *business.Client
+	businessRuns   map[int64]*businessRun
+	businessDone   chan struct{}
+	mu             sync.Mutex
+	store          *store.Store
+	root           string
+	enc            map[string][]byte
+	sign           map[string]ed25519.PublicKey
+	config         *protocol.Config
+	client         *cloud.Client
+	session        *cloud.Session
+	state          State
+	ctx            context.Context
+	cancel         context.CancelFunc
+	done           chan struct{}
+	log            *slog.Logger
+	tasks          *tasks.Service
+	protocols      *protocols.Manager
 }
 
 func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed25519.PublicKey, logger *slog.Logger) (*Service, error) {
@@ -71,6 +76,13 @@ func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{store: db, root: root, enc: enc, sign: sign, state: State{InstanceID: id, Connection: "未登录"}, ctx: ctx, cancel: cancel, done: make(chan struct{}), log: logger}
 	s.tasks = taskService
+	s.businessClient = business.NewClient()
+	s.businessRuns = map[int64]*businessRun{}
+	s.businessDone = make(chan struct{})
+	if err := s.tasks.DisableBusiness(); err != nil {
+		cancel()
+		return nil, err
+	}
 	data, err := db.Get("config")
 	if err != nil {
 		s.state.Notice = "本地通信配置无法读取，请重新导入 .cfg 文件"
@@ -97,6 +109,7 @@ func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed
 		}
 	}
 	go s.monitor()
+	go s.businessLoop()
 	return s, nil
 }
 func (s *Service) useConfig(c protocol.Config) {
@@ -215,6 +228,12 @@ func (s *Service) Login(f Form) error {
 			return err
 		}
 	}
+	if err := s.tasks.DisableBusiness(); err != nil {
+		cleanup, stop := context.WithTimeout(s.ctx, 2*time.Second)
+		defer stop()
+		_ = s.client.Call(cleanup, "POST", "/auth/logout", session.Token, struct{}{}, nil)
+		return err
+	}
 	s.session = &session
 	s.state.AuthProtocol = f.AuthProtocol
 	s.state.LoggedIn = true
@@ -230,6 +249,12 @@ func (s *Service) Login(f Form) error {
 	return nil
 }
 func (s *Service) clearSession(notice string) {
+	s.cancelBusinessLocked()
+	if s.tasks != nil {
+		if err := s.tasks.DisableBusiness(); err != nil {
+			s.log.Warn("business state persistence failed")
+		}
+	}
 	if s.protocols != nil {
 		s.protocols.Deactivate()
 	}
@@ -297,6 +322,10 @@ func (s *Service) monitor() {
 func (s *Service) Close() {
 	s.cancel()
 	<-s.done
+	if s.businessDone != nil {
+		<-s.businessDone
+	}
+	s.businessWG.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.session != nil {
@@ -310,5 +339,8 @@ func (s *Service) Close() {
 	}
 	if s.client != nil {
 		s.client.Close()
+	}
+	if s.businessClient != nil {
+		s.businessClient.Close()
 	}
 }

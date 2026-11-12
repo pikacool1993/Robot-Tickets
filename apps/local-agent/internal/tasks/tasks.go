@@ -39,7 +39,28 @@ type Log struct {
 	At    string `json:"at"`
 	Text  string `json:"text"`
 }
+type AddressForm struct {
+	Province string   `json:"province"`
+	City     string   `json:"city"`
+	District string   `json:"district"`
+	Address  string   `json:"address"`
+	Name     string   `json:"name"`
+	Phone    string   `json:"phone"`
+	Region   []string `json:"region"`
+}
+type ShippingAddress struct {
+	Form AddressForm `json:"form"`
+}
 type Task struct {
+	BusinessStatus  string           `json:"businessStatus"`
+	BusinessMessage string           `json:"businessMessage"`
+	People          []PersonView     `json:"people"`
+	PeopleSelected  []string         `json:"peopleSelected"`
+	SpectatorNames  []string         `json:"spectatorNames"`
+	PeopleUsable    bool             `json:"peopleUsable"`
+	Note            string           `json:"note"`
+	ShippingAddress *ShippingAddress `json:"shippingAddress,omitempty"`
+
 	WechatNickname string   `json:"wechatNickname,omitempty"`
 	ProtocolAvatar string   `json:"protocolAvatar,omitempty"`
 	ProtocolStatus string   `json:"protocolStatus,omitempty"`
@@ -54,9 +75,10 @@ type Task struct {
 	Latest         *Log     `json:"latest"`
 }
 type document struct {
-	NextID      int64  `json:"nextID"`
-	Fingerprint string `json:"fingerprint"`
-	Tasks       []Task `json:"tasks"`
+	Business    map[int64]BusinessData `json:"business,omitempty"`
+	NextID      int64                  `json:"nextID"`
+	Fingerprint string                 `json:"fingerprint"`
+	Tasks       []Task                 `json:"tasks"`
 }
 type View struct {
 	Catalog     Catalog `json:"catalog"`
@@ -180,8 +202,18 @@ func parseCatalog(data []byte) (Catalog, string, error) {
 }
 func (s *Service) clone() document {
 	next := s.doc
+	next.Business = cloneBusiness(s.doc.Business)
 	next.Tasks = append([]Task{}, s.doc.Tasks...)
 	for i := range next.Tasks {
+		if a := next.Tasks[i].ShippingAddress; a != nil {
+			copy := *a
+			copy.Form.Region = append([]string{}, a.Form.Region...)
+			next.Tasks[i].ShippingAddress = &copy
+		}
+		if l := next.Tasks[i].Latest; l != nil {
+			copy := *l
+			next.Tasks[i].Latest = &copy
+		}
 		next.Tasks[i].Logs = append([]Log{}, next.Tasks[i].Logs...)
 		next.Tasks[i].Selected = append([]string{}, next.Tasks[i].Selected...)
 	}
@@ -201,7 +233,11 @@ func (s *Service) commit(next document) error {
 func (s *Service) Snapshot() View {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tasks := s.clone().Tasks
+	copy := s.clone()
+	tasks := copy.Tasks
+	for i := range tasks {
+		fillBusinessView(&tasks[i], copy.Business[tasks[i].ID])
+	}
 	if tasks == nil {
 		tasks = []Task{}
 	}
@@ -238,6 +274,7 @@ func (s *Service) ResetIDs() error {
 	defer s.mu.Unlock()
 	next := s.clone()
 	next.Tasks = []Task{}
+	next.Business = nil
 	next.NextID = 1
 	return s.commit(next)
 }
@@ -302,6 +339,7 @@ func (s *Service) Delete(id int64) error {
 	for i, t := range next.Tasks {
 		if t.ID == id {
 			next.Tasks = append(next.Tasks[:i], next.Tasks[i+1:]...)
+			delete(next.Business, id)
 			return s.commit(next)
 		}
 	}
@@ -323,6 +361,78 @@ func (s *Service) AppendLog(id int64, level, text string) error {
 	for i := range next.Tasks {
 		if next.Tasks[i].ID == id {
 			addLog(&next.Tasks[i], level, text)
+			return s.commit(next)
+		}
+	}
+	return errors.New("任务不存在")
+}
+
+// Notes and addresses are committed together with their non-sensitive operation log.
+func (s *Service) SaveNote(id int64, note string) error {
+	note = strings.TrimSpace(note)
+	if len([]rune(note)) > 500 {
+		return errors.New("任务备注不能超过 500 字")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.clone()
+	for i := range next.Tasks {
+		if next.Tasks[i].ID == id {
+			if next.Tasks[i].Note == note {
+				return nil
+			}
+			next.Tasks[i].Note = note
+			addLog(&next.Tasks[i], "success", "任务备注已更新")
+			return s.commit(next)
+		}
+	}
+	return errors.New("任务不存在")
+}
+func (s *Service) SaveAddress(id int64, address *ShippingAddress) error {
+	if address != nil {
+		copy := *address
+		f := &copy.Form
+		f.Province = strings.TrimSpace(f.Province)
+		f.City = strings.TrimSpace(f.City)
+		f.District = strings.TrimSpace(f.District)
+		f.Address = strings.TrimSpace(f.Address)
+		f.Name = strings.TrimSpace(f.Name)
+		f.Phone = strings.TrimSpace(f.Phone)
+		for _, v := range []string{f.Province, f.City, f.District, f.Name} {
+			if v == "" || len([]rune(v)) > 50 {
+				return errors.New("请填写完整的省、市、区县及收货人，单项不超过 50 字")
+			}
+		}
+		if f.Address == "" || len([]rune(f.Address)) > 200 {
+			return errors.New("请填写详细地址，最多 200 字")
+		}
+		if len(f.Phone) != 11 || f.Phone[0] != '1' {
+			return errors.New("请填写有效的 11 位手机号")
+		}
+		for _, c := range f.Phone {
+			if c < '0' || c > '9' {
+				return errors.New("手机号只能包含数字")
+			}
+		}
+		f.Region = []string{f.Province, f.City, f.District}
+		address = &copy
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.clone()
+	for i := range next.Tasks {
+		if next.Tasks[i].ID == id {
+			before, _ := json.Marshal(next.Tasks[i].ShippingAddress)
+			after, _ := json.Marshal(address)
+			if bytes.Equal(before, after) {
+				return nil
+			}
+			next.Tasks[i].ShippingAddress = address
+			text := "收货地址已更新"
+			if address == nil {
+				text = "收货地址已清除"
+			}
+			addLog(&next.Tasks[i], "success", text)
 			return s.commit(next)
 		}
 	}

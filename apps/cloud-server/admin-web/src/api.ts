@@ -31,6 +31,10 @@ async function request(path: string, method = 'GET', body?: unknown) {
 }
 export const api = {
   exportClientConfig,
+  businessTemplates: () => request('/business-device-templates'),
+  saveBusinessTemplate: (device: string, data: unknown) => request(`/business-device-templates/${device}`, 'PUT', data),
+  agentBusinessConfig: (id: string) => request(`/agents/${id}/business-config`),
+  saveAgentBusinessConfig: (id: string, data: unknown) => request(`/agents/${id}/business-config`, 'PUT', data),
   login: async (username: string, password: string) => { const data = await request('/auth/login', 'POST', { username, password }); sessionStorage.setItem(tokenKey, data.access_token); return data.admin },
   me: () => request('/auth/me'), logout: () => request('/auth/logout', 'POST', {}),
   agents: () => request('/agents'), createAgent: (data: any) => request('/agents', 'POST', data),

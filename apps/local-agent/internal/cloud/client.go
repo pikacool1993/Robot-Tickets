@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
+	"robot/apps/local-agent/internal/business"
 	"time"
 )
 
@@ -45,9 +46,10 @@ type LoginInput struct {
 	InstanceID   string `json:"client_instance_id"`
 }
 type Session struct {
-	Token     string    `json:"access_token"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Agent     struct {
+	BusinessConfig business.Config `json:"business_config"`
+	Token          string          `json:"access_token"`
+	ExpiresAt      time.Time       `json:"expires_at"`
+	Agent          struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"agent"`

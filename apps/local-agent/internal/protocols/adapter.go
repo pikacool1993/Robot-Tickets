@@ -61,6 +61,10 @@ type envelope struct {
 	Data    json.RawMessage `json:"data"`
 }
 type callError struct{ status, code int }
+type networkError struct{}
+
+func (*networkError) Error() string { return "协议服务暂时无法连接" }
+func (*networkError) Timeout() bool { return true }
 
 func (e *callError) Error() string {
 	return fmt.Sprintf("协议请求未成功（HTTP %d，业务码 %d）", e.status, e.code)
@@ -80,7 +84,7 @@ func (a *adapter) call(ctx context.Context, method, path string, body any, out a
 	req.Header.Set("Authorization", "Bearer "+a.token)
 	res, err := a.client.Do(req)
 	if err != nil {
-		return errors.New("协议服务暂时无法连接")
+		return &networkError{}
 	}
 	defer res.Body.Close()
 	var e envelope

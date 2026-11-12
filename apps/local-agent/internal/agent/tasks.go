@@ -29,6 +29,19 @@ func (s *Service) TaskView() (tasks.View, error) {
 				view.Tasks[i].ProtocolStatus = b.Status
 				view.Tasks[i].AuthProtocol = b.Protocol
 				view.Tasks[i].Paused = b.Paused
+				cached, _ := s.tasks.Business(view.Tasks[i].ID)
+				if cached.Account != b.Protocol+":"+b.Account.Ref {
+					view.Tasks[i].People = nil
+					view.Tasks[i].PeopleSelected = nil
+					view.Tasks[i].SpectatorNames = nil
+					view.Tasks[i].PeopleUsable = false
+					view.Tasks[i].BusinessStatus = "waiting"
+					view.Tasks[i].BusinessMessage = "等待业务登录"
+				}
+				run := s.businessRuns[view.Tasks[i].ID]
+				if b.Status != "alive" || b.Paused || b.Protocol != s.state.AuthProtocol || run == nil || !sameBinding(run.binding, b) {
+					view.Tasks[i].PeopleUsable = false
+				}
 				if b.Protocol == "yyb" && b.Account.Ref != "" {
 					view.Tasks[i].ProtocolAvatar = s.protocols.AvatarURL(b.Protocol, b.Account)
 				}
@@ -75,5 +88,23 @@ func (s *Service) DeleteTask(id int64) error {
 			return err
 		}
 	}
+	s.stopTaskBusinessLocked(id)
 	return s.tasks.Delete(id)
+}
+
+func (s *Service) SaveTaskNote(id int64, note string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireTaskSession(); err != nil {
+		return err
+	}
+	return s.tasks.SaveNote(id, note)
+}
+func (s *Service) SaveTaskAddress(id int64, address *tasks.ShippingAddress) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireTaskSession(); err != nil {
+		return err
+	}
+	return s.tasks.SaveAddress(id, address)
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"robot/apps/local-agent/internal/store"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -214,5 +215,171 @@ func TestWeChatResponseCodesAndTransientFailure(t *testing.T) {
 	state, e = p.Maintain(context.Background(), *scan.Account)
 	if e != nil || state != "alive" {
 		t.Fatalf("heartbeat failed: %s %v", state, e)
+	}
+}
+
+func TestMaintenanceLogsEveryRoundForEachBoundTask(t *testing.T) {
+	state := "alive"
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/accounts/refresh" {
+			t.Errorf("unexpected endpoint %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"status": state}})
+	}))
+	defer srv.Close()
+	_, portText, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	port, _ := strconv.Atoi(portText)
+	db, err := store.Open(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	manager, err := New(t.TempDir(), "test", db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	manager.doc.Runtime["yyb"] = runtimeRecord{Port: port}
+	manager.doc.Bindings[1] = Binding{Protocol: "yyb", Account: Account{Ref: "same-account"}, Status: "alive"}
+	manager.doc.Bindings[2] = manager.doc.Bindings[1]
+	logs := map[int64][]string{}
+	levels := map[int64][]string{}
+	manager.OnTaskLog = func(id int64, level, text string) {
+		logs[id] = append(logs[id], text)
+		levels[id] = append(levels[id], level)
+	}
+	for i := 0; i < 2; i++ {
+		manager.checkAccounts(context.Background(), "yyb")
+	}
+	if calls != 2 {
+		t.Fatalf("expected one shared-account request each round, got %d", calls)
+	}
+	for _, id := range []int64{1, 2} {
+		if len(logs[id]) != 2 || logs[id][1] != "YYB 账号保活检查成功：账号在线" {
+			t.Fatalf("missing repeated healthy logs: %v", logs)
+		}
+	}
+	state = "expired"
+	manager.checkAccounts(context.Background(), "yyb")
+	if levels[1][2] != "error" || manager.Bindings()[1].Status != "expired" {
+		t.Fatal("missing expired result")
+	}
+	state = "unknown"
+	manager.checkAccounts(context.Background(), "yyb")
+	if levels[1][3] != "warning" {
+		t.Fatal("unknown result should warn")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	manager.checkAccounts(ctx, "yyb")
+	if len(logs[1]) != 4 {
+		t.Fatal("cancelled round emitted a completed heartbeat")
+	}
+}
+
+func TestMiniProgramCodeUsesBoundAccount(t *testing.T) {
+	for _, kind := range []string{"wechat", "yyb"} {
+		t.Run(kind, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var body map[string]string
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if r.Header.Get("Authorization") != "Bearer service-token" {
+					t.Error("unauthenticated local request")
+				}
+				if kind == "wechat" {
+					if r.URL.Path != "/api/Wxapp/JSLogin" || body["Wxid"] != "account-ref" || body["Appid"] != "test-app" {
+						t.Error("wrong WeChat request")
+					}
+					json.NewEncoder(w).Encode(map[string]any{"Success": true, "Code": 0, "Data": map[string]any{"BaseResponse": map[string]int{"ret": 0}, "code": "temporary"}})
+				} else {
+					if r.URL.Path != "/wxapp/getCode" || body["ref"] != "account-ref" || body["app_id"] != "test-app" {
+						t.Error("wrong YYB request")
+					}
+					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"result": map[string]string{"code": "temporary", "errMsg": "login:ok"}}})
+				}
+			}))
+			defer srv.Close()
+			_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+			n, _ := strconv.Atoi(port)
+			binding := Binding{Protocol: kind, Account: Account{Ref: "account-ref"}, Generation: "new", Status: "alive"}
+			m := &Manager{active: kind, state: map[string]string{kind: "running"}, accountLocks: map[string]*sync.Mutex{}, doc: persisted{Runtime: map[string]runtimeRecord{kind: {Port: n, Token: "service-token"}}, Bindings: map[int64]Binding{1: binding}}}
+			code, err := m.MiniProgramCode(t.Context(), 1, binding, "test-app")
+			if err != nil || code != "temporary" {
+				t.Fatalf("code=%q err=%v", code, err)
+			}
+			stale := binding
+			stale.Generation = "old"
+			if _, err = m.MiniProgramCode(t.Context(), 1, stale, "test-app"); err == nil {
+				t.Fatal("accepted stale binding")
+			}
+			b := binding
+			b.Status = "expired"
+			m.doc.Bindings[1] = b
+			if _, err = m.MiniProgramCode(t.Context(), 1, binding, "test-app"); err == nil {
+				t.Fatal("accepted expired account")
+			}
+			if calls != 1 {
+				t.Fatal("called protocol for stale account")
+			}
+		})
+	}
+}
+
+func TestResumePausedTask(t *testing.T) {
+	for _, mode := range []string{"online", "unknown", "expired", "stopped", "other-protocol", "cancelled", "save-failed"} {
+		t.Run(mode, func(t *testing.T) {
+			db, err := store.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			binding := Binding{Protocol: "wechat", Account: Account{Ref: "account"}, Status: "alive", Paused: true, Generation: "binding"}
+			m := &Manager{db: db, active: "wechat", state: map[string]string{"wechat": "running"}, manual: map[string]bool{}, workCtx: ctx, doc: persisted{Bindings: map[int64]Binding{1: binding}, Runtime: map[string]runtimeRecord{}}}
+			switch mode {
+			case "unknown", "expired":
+				b := binding
+				b.Status = mode
+				m.doc.Bindings[1] = b
+			case "stopped":
+				m.state["wechat"] = "stopped"
+			case "other-protocol":
+				m.active = "yyb"
+			case "cancelled":
+				cancel()
+			case "save-failed":
+				db.Close()
+			}
+			err = m.ResumeTask(1)
+			if mode == "online" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				b := m.Bindings()[1]
+				if b.Paused || b.Account != binding.Account || b.Generation != binding.Generation {
+					t.Fatalf("unexpected binding: %+v", b)
+				}
+				raw, err := db.Get("protocols.v1")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var saved persisted
+				if json.Unmarshal(raw, &saved) != nil || saved.Bindings[1].Paused {
+					t.Fatal("resume not persisted")
+				}
+				if err = m.ResumeTask(1); err != nil {
+					t.Fatal("repeat resume failed", err)
+				}
+			} else {
+				if err == nil || !m.Bindings()[1].Paused {
+					t.Fatal("unsafe resume", err)
+				}
+			}
+		})
 	}
 }

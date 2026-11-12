@@ -183,3 +183,13 @@ func (a *App) CopyTaskLogs(id int64) error {
 	}
 	return fmt.Errorf("任务不存在")
 }
+
+func (a *App) SaveTaskNote(id int64, note string) error { return a.service.SaveTaskNote(id, note) }
+func (a *App) SaveTaskAddress(id int64, address *tasks.ShippingAddress) error {
+	return a.service.SaveTaskAddress(id, address)
+}
+
+func (a *App) RefreshTaskPeople(id int64, login bool) error {
+	return a.service.RefreshTaskPeople(id, login)
+}
+func (a *App) SaveTaskPeople(id int64, ids []string) error { return a.service.SaveTaskPeople(id, ids) }

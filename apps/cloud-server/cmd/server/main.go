@@ -62,6 +62,9 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	if err = seedBusinessTemplates(ctx, db); err != nil {
+		log.Fatal(err)
+	}
 	if err = bootstrapAdmin(ctx, db); err != nil {
 		log.Fatal(err)
 	}
@@ -108,6 +111,10 @@ func main() {
 	mux.HandleFunc("PATCH /api/admin/v1/agents/{id}/device-limit", s.setDeviceLimit)
 	mux.HandleFunc("DELETE /api/admin/v1/agents/{id}", s.deleteAgent)
 	mux.HandleFunc("GET /api/admin/v1/agents/{id}/audit-events", s.agentAudit)
+	mux.HandleFunc("GET /api/admin/v1/business-device-templates", s.listBusinessTemplates)
+	mux.HandleFunc("PUT /api/admin/v1/business-device-templates/{device}", s.saveBusinessTemplate)
+	mux.HandleFunc("GET /api/admin/v1/agents/{id}/business-config", s.getAgentBusinessConfig)
+	mux.HandleFunc("PUT /api/admin/v1/agents/{id}/business-config", s.saveAgentBusinessConfig)
 	mux.HandleFunc("POST /api/agent/v1/auth/login", s.agentLogin)
 	mux.HandleFunc("POST /api/agent/v1/auth/logout", s.agentLogout)
 	mux.HandleFunc("GET /api/agent/v1/auth/me", s.agentMe)

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"robot/apps/local-agent/internal/business"
 	"robot/apps/local-agent/internal/store"
 )
 
@@ -203,5 +205,178 @@ func TestLogWriteFailureDoesNotChangeMemory(t *testing.T) {
 	}
 	if len(service.Snapshot().Tasks[0].Logs) != 1 {
 		t.Fatal("failed commit modified memory")
+	}
+}
+
+func TestTaskNoteAndShippingAddress(t *testing.T) {
+	root := t.TempDir()
+	writeCatalog(t, root, fixture())
+	db, err := store.Open(filepath.Join(root, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service, err := New(root, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.SaveNote(task.ID, "  特殊说明\n需要相邻座位  "); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.SaveNote(task.ID, strings.Repeat("字", 501)); err == nil {
+		t.Fatal("accepted oversized note")
+	}
+	address := &ShippingAddress{Form: AddressForm{Province: "四川省", City: "成都市", District: "测试区", Address: "测试街道 1 号", Name: "测试收件人", Phone: "13800000000", Region: []string{"错误区域"}}}
+	if err = service.SaveAddress(task.ID, address); err != nil {
+		t.Fatal(err)
+	}
+	// Caller-owned region data and snapshot edits cannot mutate persisted configuration.
+	address.Form.Name = "external edit"
+	got := service.Snapshot().Tasks[0]
+	if got.ShippingAddress.Form.Name != "测试收件人" || strings.Join(got.ShippingAddress.Form.Region, "/") != "四川省/成都市/测试区" {
+		t.Fatal("address normalization or ownership failed")
+	}
+	got.ShippingAddress.Form.Region[0] = "changed"
+	invalid := *got.ShippingAddress
+	invalid.Form.Phone = "invalid"
+	if service.SaveAddress(task.ID, &invalid) == nil {
+		t.Fatal("accepted invalid phone")
+	}
+	service, err = New(root, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = service.Snapshot().Tasks[0]
+	if got.Note != "特殊说明\n需要相邻座位" || got.ShippingAddress.Form.Region[0] != "四川省" {
+		t.Fatal("note/address not persisted")
+	}
+	for _, entry := range got.Logs {
+		if strings.Contains(entry.Text, "测试收件人") || strings.Contains(entry.Text, "13800000000") || strings.Contains(entry.Text, "测试街道") || strings.Contains(entry.Text, "特殊说明") {
+			t.Fatal("sensitive details copied to log")
+		}
+	}
+	count := len(got.Logs)
+	if err = service.SaveAddress(task.ID, got.ShippingAddress); err != nil {
+		t.Fatal(err)
+	}
+	if len(service.Snapshot().Tasks[0].Logs) != count {
+		t.Fatal("unchanged address emitted duplicate log")
+	}
+	if err = service.SaveAddress(task.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.SaveNote(task.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	service, err = New(root, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = service.Snapshot().Tasks[0]
+	if got.ShippingAddress != nil || got.Note != "" {
+		t.Fatal("clear did not persist")
+	}
+	db.Close()
+	if service.SaveAddress(task.ID, address) == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if service.Snapshot().Tasks[0].ShippingAddress != nil {
+		t.Fatal("failed commit changed address")
+	}
+}
+
+func TestBusinessPersistenceAndPrivacy(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s, err := New(root, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := BusinessData{DeviceID: "17944492587160", DeviceType: "ios", Account: "wechat:account", People: []business.Person{{ID: "1", Name: "测试", Card: "123***456", Phone: "138****0000", FullCard: "sensitive-card", FullPhone: "sensitive-phone", Signature: "private-signature"}}, Usable: true, Status: "ready"}
+	if err = s.SaveBusiness(task.ID, b); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Snapshot().Tasks[0].PeopleSelected) != 0 {
+		t.Fatal("selected first fetch automatically")
+	}
+	if err = s.SavePeopleSelection(task.ID, []string{"1"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(s.Snapshot())
+	for _, secret := range []string{"sensitive-card", "sensitive-phone", "private-signature", "17944492587160", "wechat:account"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("front end leaked %s", secret)
+		}
+	}
+	restarted, err := New(root, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := restarted.Business(task.ID)
+	if err != nil || saved.DeviceID != b.DeviceID || saved.People[0].FullCard != "sensitive-card" || len(saved.Selected) != 1 {
+		t.Fatalf("lost encrypted cache: %+v %v", saved, err)
+	}
+	if err = restarted.DisableBusiness(); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.SavePeopleSelection(task.ID, []string{"1"}); err == nil {
+		t.Fatal("allowed blocked cached people")
+	}
+	if err = restarted.Delete(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = restarted.Business(task.ID); err == nil {
+		t.Fatal("deleted task retained device")
+	}
+}
+
+func TestDeviceIDLifecycle(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s, _ := New(root, db)
+	task, _ := s.Create()
+	first, err := s.EnsureBusinessDeviceID(task.ID, "windows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _ := s.EnsureBusinessDeviceID(task.ID, "windows")
+	if again != first {
+		t.Fatal("regenerated same device")
+	}
+	b, _ := s.Business(task.ID)
+	b.Account = "wechat:new-account"
+	if err = s.SaveBusiness(task.ID, b); err != nil {
+		t.Fatal(err)
+	}
+	restarted, _ := New(root, db)
+	again, _ = restarted.EnsureBusinessDeviceID(task.ID, "windows")
+	if again != first {
+		t.Fatal("restart/rebind changed device ID")
+	}
+	changed, err := restarted.EnsureBusinessDeviceID(task.ID, "android")
+	if err != nil || changed == first {
+		t.Fatal("device switch failed")
+	}
+	if err = restarted.Delete(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = restarted.EnsureBusinessDeviceID(task.ID, "android"); err == nil {
+		t.Fatal("retained deleted task device")
 	}
 }

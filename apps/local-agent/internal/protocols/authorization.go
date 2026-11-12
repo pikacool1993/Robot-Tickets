@@ -145,7 +145,7 @@ func (m *Manager) authorize(ctx context.Context, a *Attempt) {
 				return
 			}
 			old, exists := m.doc.Bindings[a.TaskID]
-			m.doc.Bindings[a.TaskID] = Binding{Protocol: a.Protocol, Account: *s.Account, Status: "alive"}
+			m.doc.Bindings[a.TaskID] = Binding{Generation: a.ID, Protocol: a.Protocol, Account: *s.Account, Status: "alive"}
 			if e = m.saveLocked(); e != nil {
 				if exists {
 					m.doc.Bindings[a.TaskID] = old
@@ -156,9 +156,9 @@ func (m *Manager) authorize(ctx context.Context, a *Attempt) {
 				a.Message = "账号绑定保存失败，原绑定已保留"
 				m.taskLog(a.TaskID, "error", a.Message)
 			} else {
-				m.taskLog(a.TaskID, "success", "扫码授权成功，协议账号已绑定；业务授权尚未接入")
+				m.taskLog(a.TaskID, "success", "扫码授权成功，协议账号已绑定")
 				a.Status = "confirmed"
-				a.Message = "协议账号已登录；业务授权尚未接入"
+				a.Message = "协议账号已登录，正在准备业务登录"
 			}
 			a.Image = ""
 			m.mu.Unlock()
@@ -208,16 +208,23 @@ func (m *Manager) checkAccounts(ctx context.Context, k string) {
 	for id, b := range m.doc.Bindings {
 		if b.Protocol == k {
 			if state, ok := results[b.Account.Ref]; ok {
-				if b.Status != state {
-					text := map[string]string{"alive": "协议账号状态已恢复正常", "expired": "协议账号已失效，请重新扫码", "unknown": "暂时无法检查协议账号状态"}[state]
-					if text != "" {
-						level := "warning"
-						if state == "alive" {
-							level = "success"
-						}
-						m.taskLog(id, level, text)
-					}
+				// Do not attach an old maintenance result to a newly rebound account.
+				observed, existed := bindings[id]
+				if !existed || observed.Protocol != b.Protocol || observed.Account.Ref != b.Account.Ref || observed.Generation != b.Generation {
+					continue
 				}
+				label := "微信账号心跳"
+				if k == "yyb" {
+					label = "YYB 账号保活检查"
+				}
+				level, text := "warning", label+"异常：暂时无法确认账号状态，下轮重试"
+				switch state {
+				case "alive":
+					level, text = "success", label+"成功：账号在线"
+				case "expired":
+					level, text = "error", label+"失败：账号已失效，请重新扫码"
+				}
+				m.taskLog(id, level, text)
 				b.Status = state
 				m.doc.Bindings[id] = b
 			}
