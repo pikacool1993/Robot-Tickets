@@ -43,6 +43,7 @@ type State struct {
 	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
+	inventory      inventoryState
 	businessWG     sync.WaitGroup
 	businessClient *business.Client
 	businessRuns   map[int64]*businessRun
@@ -76,6 +77,10 @@ func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{store: db, root: root, enc: enc, sign: sign, state: State{InstanceID: id, Connection: "未登录"}, ctx: ctx, cancel: cancel, done: make(chan struct{}), log: logger}
 	s.tasks = taskService
+	if err := s.initInventory(); err != nil {
+		cancel()
+		return nil, err
+	}
 	s.businessClient = business.NewClient()
 	s.businessRuns = map[int64]*businessRun{}
 	s.businessDone = make(chan struct{})
@@ -108,6 +113,8 @@ func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed
 			s.state.AuthProtocol = selected
 		}
 	}
+	s.inventory.wg.Add(1)
+	go s.inventoryClockLoop()
 	go s.monitor()
 	go s.businessLoop()
 	return s, nil
@@ -249,6 +256,7 @@ func (s *Service) Login(f Form) error {
 	return nil
 }
 func (s *Service) clearSession(notice string) {
+	s.cancelInventoryLocked()
 	s.cancelBusinessLocked()
 	if s.tasks != nil {
 		if err := s.tasks.DisableBusiness(); err != nil {
@@ -294,25 +302,36 @@ func (s *Service) monitor() {
 			return
 		case now := <-ticker.C:
 			s.mu.Lock()
-			if s.session != nil {
-				if !now.Before(s.session.ExpiresAt) {
+			session, client := s.session, s.client
+			if session == nil {
+				s.mu.Unlock()
+				continue
+			}
+			if !now.Before(session.ExpiresAt) {
+				s.clearSession("登录已过期，请重新登录")
+				s.mu.Unlock()
+				continue
+			}
+			if now.Before(nextCheck) {
+				s.mu.Unlock()
+				continue
+			}
+			nextCheck = now.Add(30 * time.Second)
+			s.mu.Unlock()
+			ctx, cancel := context.WithDeadline(s.ctx, session.ExpiresAt)
+			err := client.Call(ctx, "GET", "/auth/me", session.Token, nil, nil)
+			cancel()
+			s.mu.Lock()
+			if s.session == session {
+				var apiErr *cloud.APIError
+				if !time.Now().Before(session.ExpiresAt) {
 					s.clearSession("登录已过期，请重新登录")
-					s.log.Info("session expired")
-				} else if !now.Before(nextCheck) {
-					ctx, cancel := context.WithDeadline(s.ctx, s.session.ExpiresAt)
-					err := s.client.Call(ctx, "GET", "/auth/me", s.session.Token, nil, nil)
-					cancel()
-					nextCheck = time.Now().Add(30 * time.Second)
-					var apiErr *cloud.APIError
-					if !time.Now().Before(s.session.ExpiresAt) {
-						s.clearSession("登录已过期，请重新登录")
-					} else if errors.As(err, &apiErr) && apiErr.Status == 401 {
-						s.clearSession("账号授权或登录会话已失效，请重新登录")
-					} else if err != nil {
-						s.state.Connection = "连接中断"
-					} else {
-						s.state.Connection = "已连接"
-					}
+				} else if errors.As(err, &apiErr) && apiErr.Status == 401 {
+					s.clearSession("账号授权或登录会话已失效，请重新登录")
+				} else if err != nil {
+					s.state.Connection = "连接中断"
+				} else {
+					s.state.Connection = "已连接"
 				}
 			}
 			s.mu.Unlock()
@@ -326,6 +345,7 @@ func (s *Service) Close() {
 		<-s.businessDone
 	}
 	s.businessWG.Wait()
+	s.inventory.wg.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.session != nil {

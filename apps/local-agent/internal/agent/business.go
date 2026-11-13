@@ -38,6 +38,7 @@ func (s *Service) businessLoop() {
 		case <-ticker.C:
 			s.mu.Lock()
 			s.reconcileBusinessLocked()
+			s.reconcileInventoryLocked()
 			s.mu.Unlock()
 		}
 	}
@@ -232,6 +233,9 @@ func (s *Service) RefreshTaskPeople(id int64, login bool) error {
 	if err := s.requireTaskSession(); err != nil {
 		return err
 	}
+	if err := s.requireInventoryStoppedLocked(id); err != nil {
+		return err
+	}
 	resumed := false
 	if s.protocols != nil {
 		if b, ok := s.protocols.Bindings()[id]; ok && b.Paused {
@@ -264,6 +268,9 @@ func (s *Service) SaveTaskPeople(id int64, ids []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.requireTaskSession(); err != nil {
+		return err
+	}
+	if err := s.requireInventoryStoppedLocked(id); err != nil {
 		return err
 	}
 	r := s.businessRuns[id]

@@ -31,6 +31,8 @@ async function request(path: string, method = 'GET', body?: unknown) {
 }
 export const api = {
   exportClientConfig,
+ currentMatch: () => request("/current-match"),
+ saveCurrentMatch: (data: unknown) => request("/current-match", "PUT", data),
   businessTemplates: () => request('/business-device-templates'),
   saveBusinessTemplate: (device: string, data: unknown) => request(`/business-device-templates/${device}`, 'PUT', data),
   agentBusinessConfig: (id: string) => request(`/agents/${id}/business-config`),

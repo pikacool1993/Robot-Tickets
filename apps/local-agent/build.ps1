@@ -30,6 +30,12 @@ try {
     if (!(Test-Path -LiteralPath "$OutputDir/config/seat-catalog.json")) {
         Copy-Item -LiteralPath $seatCatalog -Destination "$OutputDir/config/seat-catalog.json"
     }
+    $billRegions = Join-Path $PSScriptRoot "config/bill-regions.json"
+    if (!(Test-Path -LiteralPath $billRegions)) { throw "Missing config/bill-regions.json" }
+    Get-Content -LiteralPath $billRegions -Raw -Encoding UTF8 | ConvertFrom-Json | Out-Null
+    if (!(Test-Path -LiteralPath "$OutputDir/config/bill-regions.json")) {
+        Copy-Item -LiteralPath $billRegions -Destination "$OutputDir/config/bill-regions.json"
+    }
     $previousOS = $env:GOOS
     $previousArch = $env:GOARCH
     $previousCGO = $env:CGO_ENABLED

@@ -10,6 +10,7 @@ apps/local-agent/frontend/node_modules/
 apps/local-agent/frontend/dist/
 apps/local-agent/frontend/wailsjs/
 apps/local-agent/build/bin/
+apps/local-agent/build/inventory-preview/
 apps/local-agent/build/windows/*.syso
 apps/local-agent/*.syso
 apps/local-agent/data/

@@ -52,6 +52,7 @@ type ShippingAddress struct {
 	Form AddressForm `json:"form"`
 }
 type Task struct {
+	AllowCross      bool             `json:"allowCross"`
 	BusinessStatus  string           `json:"businessStatus"`
 	BusinessMessage string           `json:"businessMessage"`
 	People          []PersonView     `json:"people"`
@@ -433,6 +434,20 @@ func (s *Service) SaveAddress(id int64, address *ShippingAddress) error {
 				text = "收货地址已清除"
 			}
 			addLog(&next.Tasks[i], "success", text)
+			return s.commit(next)
+		}
+	}
+	return errors.New("任务不存在")
+}
+
+func (s *Service) SaveCross(id int64, value bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.clone()
+	for i := range next.Tasks {
+		if next.Tasks[i].ID == id {
+			next.Tasks[i].AllowCross = value
+			addLog(&next.Tasks[i], "info", "已更新跨区域凑单设置")
 			return s.commit(next)
 		}
 	}

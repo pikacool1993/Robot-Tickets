@@ -611,7 +611,7 @@ func (s *Server) agentLogin(w http.ResponseWriter, r *http.Request) {
 		s.failure(w, 500, keyID, "internal_error", "Internal error")
 		return
 	}
-	s.respond(w, 200, keyID, payload{"ok", "", map[string]any{"business_config": s.businessConfig(r.Context(), id), "access_token": token, "token_type": "Bearer", "expires_at": expires, "agent": map[string]string{"id": id, "name": name}, "client_number": in.ClientNumber, "client_instance_id": in.ClientInstanceID, "agent_key_id": fmt.Sprintf("agent-%s-v1", id)}})
+	s.respond(w, 200, keyID, payload{"ok", "", map[string]any{"current_match": s.matchSnapshot(r.Context()), "business_config": s.businessConfig(r.Context(), id), "access_token": token, "token_type": "Bearer", "expires_at": expires, "agent": map[string]string{"id": id, "name": name}, "client_number": in.ClientNumber, "client_instance_id": in.ClientInstanceID, "agent_key_id": fmt.Sprintf("agent-%s-v1", id)}})
 }
 func (s *Server) agentLoginFailure(r *http.Request, id string, in struct {
 	Username         string `json:"username"`

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"robot/apps/local-agent/internal/agent"
+	"robot/apps/local-agent/internal/inventory"
 	"robot/apps/local-agent/internal/protocols"
 	"robot/apps/local-agent/internal/store"
 	"robot/apps/local-agent/internal/tasks"
@@ -155,7 +156,7 @@ func main() {
 	}
 	app := &App{service: service}
 	lockID := fmt.Sprintf("robot-agent-%x", sha256.Sum256([]byte(strings.ToLower(root))))
-	err = wails.Run(&options.App{Title: "Robot · 本地客户端", Width: 1440, Height: 960, MinWidth: 360, MinHeight: 560, BackgroundColour: options.NewRGB(23, 30, 41), AssetServer: &assetserver.Options{Assets: assets}, OnStartup: app.startup, OnBeforeClose: app.beforeClose, Bind: []interface{}{app}, SingleInstanceLock: &options.SingleInstanceLock{UniqueId: lockID, OnSecondInstanceLaunch: func(_ options.SecondInstanceData) { app.focus() }}, Windows: &windows.Options{WebviewUserDataPath: filepath.Join(dataDir, "webview"), Theme: windows.Dark}})
+	err = wails.Run(&options.App{Title: "Robot · 本地客户端", Width: 1280, Height: 720, MinWidth: 1280, MinHeight: 720, BackgroundColour: options.NewRGB(23, 30, 41), AssetServer: &assetserver.Options{Assets: assets}, OnStartup: app.startup, OnBeforeClose: app.beforeClose, Bind: []interface{}{app}, SingleInstanceLock: &options.SingleInstanceLock{UniqueId: lockID, OnSecondInstanceLaunch: func(_ options.SecondInstanceData) { app.focus() }}, Windows: &windows.Options{WebviewUserDataPath: filepath.Join(dataDir, "webview"), Theme: windows.Dark}})
 	if err != nil {
 		logger.Error("desktop runtime failed")
 		fatal("桌面窗口启动失败，请检查 WebView2 是否正确安装")
@@ -193,3 +194,15 @@ func (a *App) RefreshTaskPeople(id int64, login bool) error {
 	return a.service.RefreshTaskPeople(id, login)
 }
 func (a *App) SaveTaskPeople(id int64, ids []string) error { return a.service.SaveTaskPeople(id, ids) }
+func (a *App) GetTaskPersonDetails(id int64, personID string) (tasks.PersonView, error) {
+	return a.service.TaskPersonDetails(id, personID)
+}
+
+func (a *App) GetInventory() (agent.InventoryView, error) { return a.service.InventoryView() }
+func (a *App) SaveInventorySettings(v inventory.Settings) error {
+	return a.service.SaveInventorySettings(v)
+}
+func (a *App) SyncInventoryClock() error                { return a.service.SyncInventoryClock() }
+func (a *App) StartInventory(id int64) error            { return a.service.StartInventory(id) }
+func (a *App) StopInventory(id int64) error             { return a.service.StopInventory(id) }
+func (a *App) SaveTaskCross(id int64, value bool) error { return a.service.SaveTaskCross(id, value) }

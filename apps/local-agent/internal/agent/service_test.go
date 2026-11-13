@@ -54,6 +54,8 @@ func TestLoginRememberRestartAndExpiry(t *testing.T) {
 				status = 401
 				code = "unauthorized"
 			}
+		case "/api/agent/v1/time":
+			data = map[string]any{"unix_ms": time.Now().UnixMilli()}
 		case "/api/agent/v1/auth/logout":
 		default:
 			t.Error("unexpected endpoint")

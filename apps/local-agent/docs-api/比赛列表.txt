@@ -1,0 +1,69 @@
+Request
+POST https://fccdn1.k4n.cc/fc/wx_api/v1/Open/matchList?lid2=1402668 HTTP/1.1
+Host: fccdn1.k4n.cc
+Connection: keep-alive
+Content-Length: 2
+xweb_xhr: 1
+Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjE0MDI2NjgsIm9pZCI6IjMwNTA0YzE0YTZmMDhiMjRhNTM5ZmI0ZTBjOGE5OTEyIiwibGlkIjowLCJzaWRlIjoid3hfYXBpIiwiYXVkIjoiIiwiZXhwIjoxNzU1MzE1NDQ4LCJpYXQiOjE3NTUyNDM0NDgsImlzcyI6IiIsImp0aSI6IjE3MGZiMmNjMDhmN2FkNDdmZjgyMjgwODg0ZGRkNzcwIiwibmJmIjoxNzU1MjQzNDQ4LCJzdWIiOiIifQ.XvRsBn7ZGzGOLCHm-05GNh9Qw6jNlWchLdLMXzZjVcc
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090c37)XWEB/14315
+Content-Type: application/json;charset:utf-8;
+Accept: */*
+Sec-Fetch-Site: cross-site
+Sec-Fetch-Mode: cors
+Sec-Fetch-Dest: empty
+Referer: https://servicewechat.com/wxffa42ecd6c0e693d/77/page-frame.html
+Accept-Encoding: gzip, deflate, br
+Accept-Language: zh-CN,zh;q=0.9
+
+
+{}
+--------------------------------------------------------
+
+Response
+HTTP/1.1 200
+Date: Fri, 15 Aug 2025 07:37:33 GMT
+Content-Type: application/json; charset=utf-8
+Connection: keep-alive
+Vary: Accept-Encoding
+Vary: Accept-Encoding
+Content-Encoding: gzip
+X-Via-JSL: c84a5e4,-
+Set-Cookie: __jsluid_s=48683f1ebffb26458c6210f579fc89d5; max-age=31536000; path=/; HttpOnly; SameSite=None; secure
+X-Cache: bypass
+Content-Length: 338
+
+{
+    "code": 1,
+    "data": {
+        "ad": {
+            "img": "",
+            "href": ""
+        },
+        "match_list": [
+            [
+                {
+                    "id": 62,
+                    "team1_color": "rgba(202, 21, 29, 1)",
+                    "team1_id": 42,
+                    "team1_logo": "https://fcscdn3.k4n.cc/upload/a30/png/2024229/1.png",
+                    "team1_name": "成都蓉城",
+                    "team2_color": "rgba(221, 39, 37, 1)",
+                    "team2_id": 47,
+                    "team2_logo": "https://fcscdn3.k4n.cc/upload/a28/png/2024221/长春亚泰.png",
+                    "team2_name": "长春亚泰",
+                    "time_e": 1757684100,
+                    "time_s": 1757676900,
+                    "sale": 1,
+                    "line_s_time": 1757484000,
+                    "line_e_time": 1757656800
+                }
+            ]
+        ]
+    },
+    "msg": "success",
+    "page": {
+        "count": 1,
+        "currentPage": 1,
+        "pageSize": 6
+    }
+}

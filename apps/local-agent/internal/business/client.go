@@ -148,7 +148,7 @@ func (c *Client) call(ctx context.Context, cfg Config, path, token string, body 
 	if err != nil {
 		return errors.New("业务请求参数无效")
 	}
-	return Retry(ctx, c.delay, func() error {
+	action := func() error {
 		req, err := http.NewRequestWithContext(ctx, "POST", c.base+path, bytes.NewReader(data))
 		if err != nil {
 			return errors.New("业务请求参数无效")
@@ -184,14 +184,18 @@ func (c *Client) call(ctx context.Context, cfg Config, path, token string, body 
 		if path == "/fc/wx_api/v1/Login/index" {
 			expected = 200
 		}
-		if result.Code != expected {
+		if result.Code != expected && !(strings.HasPrefix(path, "/fc/wx_api/v1/MatchCon/getBillRegion?") && result.Code == 200) {
 			return &APIError{HTTP: res.StatusCode, Code: result.Code}
 		}
 		if json.Unmarshal(raw, out) != nil {
 			return errors.New("业务响应字段无效")
 		}
 		return nil
-	})
+	}
+	if strings.HasPrefix(path, "/fc/wx_api/v1/MatchCon/getBillRegion?") {
+		return action()
+	}
+	return Retry(ctx, c.delay, action)
 }
 func (c *Client) Login(ctx context.Context, cfg Config, deviceID, code string) (Session, error) {
 	if err := cfg.Validate(); err != nil {

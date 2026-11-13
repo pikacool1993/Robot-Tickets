@@ -8,10 +8,46 @@ import (
 )
 
 func (s *Service) requireTaskSession() error {
+	if s.ctx != nil && s.ctx.Err() != nil {
+		return errors.New("客户端正在退出")
+	}
 	if s.session == nil || !s.state.LoggedIn || !time.Now().Before(s.session.ExpiresAt) {
 		return errors.New("请先登录客户端")
 	}
 	return nil
+}
+
+// TaskPersonDetails returns display fields only, on explicit request.
+func (s *Service) TaskPersonDetails(id int64, personID string) (tasks.PersonView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireTaskSession(); err != nil {
+		return tasks.PersonView{}, err
+	}
+	b, err := s.tasks.Business(id)
+	if err != nil {
+		return tasks.PersonView{}, err
+	}
+	if s.protocols == nil {
+		return tasks.PersonView{}, errors.New("请先绑定微信账号")
+	}
+	binding, ok := s.protocols.Bindings()[id]
+	if !ok || b.Account != binding.Protocol+":"+binding.Account.Ref {
+		return tasks.PersonView{}, errors.New("账号已变化，请刷新观演人")
+	}
+	for _, p := range b.People {
+		if p.ID == personID {
+			card, phone := p.FullCard, p.FullPhone
+			if card == "" {
+				card = p.Card
+			}
+			if phone == "" {
+				phone = p.Phone
+			}
+			return tasks.PersonView{ID: p.ID, Name: p.Name, Card: card, Phone: phone, Self: p.Self}, nil
+		}
+	}
+	return tasks.PersonView{}, errors.New("观演人不存在，请刷新列表")
 }
 func (s *Service) TaskView() (tasks.View, error) {
 	s.mu.Lock()
@@ -64,6 +100,9 @@ func (s *Service) SaveTaskSeats(id int64, mode string, selected []string) error 
 	if err := s.requireTaskSession(); err != nil {
 		return err
 	}
+	if err := s.requireInventoryStoppedLocked(id); err != nil {
+		return err
+	}
 	err := s.tasks.SaveSeats(id, mode, selected)
 	if err != nil {
 		if logErr := s.tasks.AppendLog(id, "error", "座位要求保存失败，请重试；原配置保留"); logErr != nil {
@@ -76,6 +115,9 @@ func (s *Service) DeleteTask(id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.requireTaskSession(); err != nil {
+		return err
+	}
+	if err := s.requireInventoryStoppedLocked(id); err != nil {
 		return err
 	}
 	if s.protocols != nil {

@@ -69,6 +69,7 @@ func TestAgentNumberSwitchIsAtomic(t *testing.T) {
 					} else {
 						audit.WillReturnResult(sqlmock.NewResult(1, 1))
 						mock.ExpectCommit()
+						mock.ExpectQuery("SELECT config,revision FROM current_match").WillReturnRows(sqlmock.NewRows([]string{"config", "revision"}))
 						config := mock.ExpectQuery("SELECT c.device_type,c.revision,t.revision,t.template").WithArgs(id)
 						raw, _ := businessDefaults.ReadFile("business_templates/windows.json")
 						switch mode {

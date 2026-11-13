@@ -46,9 +46,10 @@ type LoginInput struct {
 	InstanceID   string `json:"client_instance_id"`
 }
 type Session struct {
-	BusinessConfig business.Config `json:"business_config"`
-	Token          string          `json:"access_token"`
-	ExpiresAt      time.Time       `json:"expires_at"`
+	CurrentMatch   protocol.MatchConfig `json:"current_match"`
+	BusinessConfig business.Config      `json:"business_config"`
+	Token          string               `json:"access_token"`
+	ExpiresAt      time.Time            `json:"expires_at"`
 	Agent          struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`

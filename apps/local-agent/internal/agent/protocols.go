@@ -51,6 +51,9 @@ func (s *Service) ControlProtocol(action string, confirmed bool) error {
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
 	defer cancel()
+	if confirmed && (action == "stop" || action == "restart") {
+		s.cancelInventoryLocked()
+	}
 	return s.protocols.Control(ctx, s.state.AuthProtocol, action, confirmed)
 }
 func (s *Service) BeginAuthorization(id int64) (protocols.Attempt, error) {
@@ -58,6 +61,9 @@ func (s *Service) BeginAuthorization(id int64) (protocols.Attempt, error) {
 	defer s.mu.Unlock()
 	if e := s.requireTaskSession(); e != nil {
 		return protocols.Attempt{}, e
+	}
+	if err := s.requireInventoryStoppedLocked(id); err != nil {
+		return protocols.Attempt{}, err
 	}
 	if s.protocols == nil {
 		return protocols.Attempt{}, errors.New("协议服务未初始化")
