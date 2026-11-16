@@ -85,7 +85,7 @@ type Plan struct {
 
 func Parse(raw []byte) ([]Region, error) {
 	var s Snapshot
-	if len(raw) > 2<<20 || json.Unmarshal(raw, &s) != nil || (s.Code != 1 && s.Code != 200) || s.Data == nil {
+	if len(raw) > 2<<20 || json.Unmarshal(raw, &s) != nil || s.Code != 1 || s.Data == nil {
 		return nil, errors.New("票区响应格式或业务状态无效")
 	}
 	regions := []Region{}

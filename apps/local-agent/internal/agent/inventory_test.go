@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
+	"robot/apps/local-agent/internal/business"
 	"robot/apps/local-agent/internal/cloud"
 	"robot/apps/local-agent/internal/inventory"
 	"robot/apps/local-agent/internal/store"
@@ -17,6 +19,53 @@ import (
 	"testing"
 	"time"
 )
+
+func TestInventoryQueryErrorsDoNotPauseOrCancelDeadline(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ts, err := tasks.New(t.TempDir(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := ts.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	qctx, qcancel := context.WithCancel(ctx)
+	defer qcancel()
+	target := time.Now().Add(time.Second)
+	r := &inventoryRun{ctx: ctx, cancel: cancel, queryCancel: qcancel, status: "monitoring", target: target, early: true}
+	s := &Service{tasks: ts, inventory: inventoryState{runs: map[int64]*inventoryRun{task.ID: r}}}
+	errorsToCheck := []error{errors.New("network failure"), context.DeadlineExceeded}
+	for _, code := range []int{-1, 996, 997, 998, 999, 200, 1234} {
+		errorsToCheck = append(errorsToCheck, &business.APIError{HTTP: 200, Code: code})
+	}
+	for _, status := range []int{401, 429, 500, 503} {
+		errorsToCheck = append(errorsToCheck, &business.APIError{HTTP: status})
+	}
+	for _, queryErr := range errorsToCheck {
+		s.recordInventoryQueryErrorLocked(task.ID, r, queryErr)
+		if r.status != "monitoring" || r.plan != nil || r.target != target || ctx.Err() != nil || qctx.Err() != nil || r.message == "" {
+			t.Fatalf("query error changed execution state: %v", queryErr)
+		}
+		before := len(ts.Snapshot().Tasks[0].Logs)
+		s.recordInventoryQueryErrorLocked(task.ID, r, queryErr)
+		if len(ts.Snapshot().Tasks[0].Logs) != before {
+			t.Fatal("repeated error flooded logs")
+		}
+	}
+	// Query failures leave the run eligible for the existing default-plan handoff.
+	r.plan = &inventory.Plan{Source: "default", Parts: []inventory.Allocation{{Quantity: 2}}}
+	s.stageInventoryOrderLocked(task.ID, r)
+	if r.status != "pending_order" || r.plan.Source != "default" || qctx.Err() == nil || ctx.Err() != nil {
+		t.Fatal("query failures prevented default-plan handoff")
+	}
+}
 
 func TestStopCancelsAllWorkAndRejectsStaleRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())

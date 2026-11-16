@@ -6,6 +6,7 @@ const emit = defineEmits<{ update: [value: InventoryView] }>()
 const view = ref<InventoryView | null>(null), error = ref(''), loadError = ref(''), busy = ref(false)
 const modal = ref<'details' | 'settings' | null>(null), dialog = ref<HTMLDialogElement | null>(null)
 const settingsForm = ref<HTMLFormElement | null>(null)
+const saleStopBusy = ref(false)
 const draft = ref<InventorySettings>({ queryMinMS: 300, queryMaxMS: 800, orderMinMS: 4500, orderMaxMS: 7500 })
 const orderMin = computed({ get: () => draft.value.orderMinMS / 1000, set: (v: number) => { draft.value.orderMinMS = Math.round(v * 1000) } })
 const orderMax = computed({ get: () => draft.value.orderMaxMS / 1000, set: (v: number) => { draft.value.orderMaxMS = Math.round(v * 1000) } })
@@ -48,6 +49,14 @@ async function sync() {
   busy.value = true; error.value = ''
   try { await backend().SyncInventoryClock(); await load() } catch (e) { if (alive) error.value = failure(e) } finally { busy.value = false }
 }
+async function changeSaleStop(event: Event) {
+  const value = (event.target as HTMLInputElement).checked
+  if (saleStopBusy.value) return
+  saleStopBusy.value = true; error.value = ''
+  try { await backend().SetSaleStopped(value); await load() }
+  catch (e) { if (alive) { (event.target as HTMLInputElement).checked = !value; error.value = failure(e) } }
+  finally { saleStopBusy.value = false }
+}
 let poll: ReturnType<typeof setInterval>, tick: ReturnType<typeof setInterval>
 onMounted(() => { void load(); poll = setInterval(load, 1000); tick = setInterval(() => { displayNow.value = sampled + performance.now() - anchor }, 200) })
 onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dialog.value?.close() })
@@ -58,6 +67,7 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
       <div class="inventory-title"><slot name="title" /></div><span class="inventory-divider" aria-hidden="true"></span>
       <button type="button" class="inventory-match" aria-haspopup="dialog" :aria-label="`查看比赛详情：${view?.match.name || '当前比赛未配置'}`" :title="`${view?.match.name || '当前比赛未配置'} · 点击查看详情`" @click="openModal('details')">{{ view?.match.name || '当前比赛未配置' }} <span aria-hidden="true">↗</span></button>
       <span class="inventory-enabled" :class="{ enabled: view?.match.enabled }">{{ view?.match.enabled ? '已启用' : '未启用' }}</span>
+      <label class="sale-stop-toggle"><input type="checkbox" :checked="!!view?.saleStopped" :disabled="saleStopBusy || !view?.match.id" @change="changeSaleStop"/><span>本场已停止售票</span></label>
       <div class="inventory-clock"><span :class="{ ready: view?.clockReady }" :title="view?.clockReady ? `时间已校准 · 偏差 ${view.offsetMS}ms` : '尚未校准，暂不可启动'"><i aria-hidden="true"></i>{{ view?.clockReady ? `已校准 · ${view.offsetMS}ms` : '未校准' }}</span><button type="button" class="inventory-link" :disabled="busy" @click="sync">{{ busy ? '处理中…' : '校准' }}</button></div>
     </div>
     <div class="inventory-meta">
@@ -101,7 +111,7 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
             <div><dt>比赛名称</dt><dd>{{ view?.match.name || '未配置' }}</dd></div><div><dt>比赛 ID</dt><dd>{{ view?.match.id || '—' }}</dd></div><div><dt>比赛状态</dt><dd>{{ view?.match.enabled ? '已启用' : '未启用' }}</dd></div>
             <div><dt>座位目录</dt><dd>{{ stadium || '未加载' }}</dd></div><div><dt>比赛时间</dt><dd>{{ time(view?.match.match_at) }}</dd></div><div><dt>开售时间</dt><dd>{{ time(view?.match.sale_at) }}</dd></div><div><dt>时区</dt><dd>北京时间（UTC+8）</dd></div>
             <div><dt>时间校准</dt><dd>{{ view?.clockReady ? `已校准 · 偏差 ${view.offsetMS}ms` : '尚未校准，暂不可启动' }}</dd></div>
-          </dl><p class="inventory-help">首次提交仅调度，下单接口待接入。</p>
+          </dl><p class="inventory-help">比赛信息由后台统一配置；停止售票开关仅控制当前客户端，不会修改官方售票状态。</p>
         </template>
         <p v-if="error || loadError || view?.clockError || view?.match.message" class="inventory-alert" role="alert">{{ error || loadError || view?.clockError || view?.match.message }}</p>
       </div>
@@ -122,6 +132,8 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
 .inventory-panel button.inventory-match:hover{color:var(--app-accent);background:transparent}
 .inventory-match>span{font-size:10px;color:var(--app-muted)}
 .inventory-id{max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sale-stop-toggle{display:inline-flex;align-items:center;gap:7px;color:var(--app-muted);font-size:12px;white-space:nowrap}
+.sale-stop-toggle input{accent-color:var(--app-danger);width:16px;height:16px;margin:0}
 </style>
 
 <style scoped>

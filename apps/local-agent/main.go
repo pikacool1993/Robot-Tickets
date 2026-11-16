@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"robot/apps/local-agent/internal/agent"
 	"robot/apps/local-agent/internal/inventory"
+	"robot/apps/local-agent/internal/netdebug"
 	"robot/apps/local-agent/internal/protocols"
 	"robot/apps/local-agent/internal/store"
 	"robot/apps/local-agent/internal/tasks"
@@ -136,7 +137,14 @@ func main() {
 		fatal("无法创建运行日志")
 	}
 	defer file.Close()
-	logger := slog.New(slog.NewJSONHandler(file, nil))
+	debugNetwork := os.Getenv("ROBOT_DEBUG") != "0"
+	level := slog.LevelInfo
+	if debugNetwork {
+		level = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{Level: level}))
+	netdebug.Configure(logger, debugNetwork)
+	logger.Info("network response debug logging", "enabled", debugNetwork)
 	db, err := store.Open(dataDir)
 	if err != nil {
 		fatal("本地数据库无法打开，请检查软件文件夹权限")
@@ -171,7 +179,7 @@ func (a *App) CopyTaskLogs(id int64) error {
 	for _, task := range view.Tasks {
 		if task.ID == id {
 			text := fmt.Sprintf("任务 %d · 操作日志\r\n", id)
-			labels := map[string]string{"info": "普通", "success": "成功", "warning": "提醒", "error": "失败", "": "普通"}
+			labels := map[string]string{"debug": "调试", "info": "普通", "success": "成功", "warning": "提醒", "error": "失败", "": "普通"}
 			for _, entry := range task.Logs {
 				at := entry.At
 				if t, e := time.Parse(time.RFC3339Nano, entry.At); e == nil {
@@ -198,7 +206,18 @@ func (a *App) GetTaskPersonDetails(id int64, personID string) (tasks.PersonView,
 	return a.service.TaskPersonDetails(id, personID)
 }
 
-func (a *App) GetInventory() (agent.InventoryView, error) { return a.service.InventoryView() }
+func (a *App) GetInventory() (agent.InventoryView, error)     { return a.service.InventoryView() }
+func (a *App) SetSaleStopped(value bool) error                { return a.service.SetSaleStopped(value) }
+func (a *App) GetOrderHistory() ([]agent.OrderDisplay, error) { return a.service.GetOrderHistory() }
+func (a *App) DeleteOrderRecord(taskID int64, orderID string) error {
+	return a.service.DeleteOrderRecord(taskID, orderID)
+}
+func (a *App) RecoverInventory(id int64, action string) error {
+	return a.service.RecoverInventory(id, action)
+}
+func (a *App) PrepareRepurchase(id int64, viewerIDs, seats []string, mode string) error {
+	return a.service.PrepareRepurchase(id, viewerIDs, seats, mode)
+}
 func (a *App) SaveInventorySettings(v inventory.Settings) error {
 	return a.service.SaveInventorySettings(v)
 }

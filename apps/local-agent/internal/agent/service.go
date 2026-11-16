@@ -12,9 +12,9 @@ import (
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
 	"robot/apps/local-agent/internal/business"
 	"robot/apps/local-agent/internal/cloud"
-	"robot/apps/local-agent/internal/protocols"
 	"robot/apps/local-agent/internal/store"
 	"robot/apps/local-agent/internal/tasks"
+	"robot/apps/local-agent/internal/userkey"
 	"strings"
 	"sync"
 	"time"
@@ -43,26 +43,29 @@ type State struct {
 	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
-	inventory      inventoryState
-	businessWG     sync.WaitGroup
-	businessClient *business.Client
-	businessRuns   map[int64]*businessRun
-	businessDone   chan struct{}
-	mu             sync.Mutex
-	store          *store.Store
-	root           string
-	enc            map[string][]byte
-	sign           map[string]ed25519.PublicKey
-	config         *protocol.Config
-	client         *cloud.Client
-	session        *cloud.Session
-	state          State
-	ctx            context.Context
-	cancel         context.CancelFunc
-	done           chan struct{}
-	log            *slog.Logger
-	tasks          *tasks.Service
-	protocols      *protocols.Manager
+	inventory         inventoryState
+	businessWG        sync.WaitGroup
+	businessClient    businessAPI
+	orderClient       orderSender
+	businessRuns      map[int64]*businessRun
+	orderKeys         map[string]*userkey.Cache
+	businessDone      chan struct{}
+	mu                sync.Mutex
+	store             *store.Store
+	root              string
+	enc               map[string][]byte
+	sign              map[string]ed25519.PublicKey
+	config            *protocol.Config
+	client            *cloud.Client
+	session           *cloud.Session
+	state             State
+	ctx               context.Context
+	cancel            context.CancelFunc
+	done              chan struct{}
+	log               *slog.Logger
+	tasks             *tasks.Service
+	protocols         protocolRuntime
+	maintenanceResume map[int64]bool
 }
 
 func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed25519.PublicKey, logger *slog.Logger) (*Service, error) {
@@ -75,13 +78,14 @@ func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Service{store: db, root: root, enc: enc, sign: sign, state: State{InstanceID: id, Connection: "未登录"}, ctx: ctx, cancel: cancel, done: make(chan struct{}), log: logger}
+	s := &Service{store: db, root: root, enc: enc, sign: sign, state: State{InstanceID: id, Connection: "未登录"}, ctx: ctx, cancel: cancel, done: make(chan struct{}), log: logger, maintenanceResume: map[int64]bool{}}
 	s.tasks = taskService
 	if err := s.initInventory(); err != nil {
 		cancel()
 		return nil, err
 	}
 	s.businessClient = business.NewClient()
+	s.orderClient = s.businessClient
 	s.businessRuns = map[int64]*businessRun{}
 	s.businessDone = make(chan struct{})
 	if err := s.tasks.DisableBusiness(); err != nil {
@@ -256,6 +260,7 @@ func (s *Service) Login(f Form) error {
 	return nil
 }
 func (s *Service) clearSession(notice string) {
+	s.maintenanceResume = map[int64]bool{}
 	s.cancelInventoryLocked()
 	s.cancelBusinessLocked()
 	if s.tasks != nil {

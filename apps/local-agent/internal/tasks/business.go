@@ -39,9 +39,22 @@ func fillBusinessView(t *Task, b BusinessData) {
 	t.BusinessMessage = b.Message
 	t.PeopleUsable = b.Usable
 	t.PeopleSelected = append([]string{}, b.Selected...)
+	t.PeopleComplete = true
+	available := map[string]bool{}
+	for _, p := range b.People {
+		available[p.ID] = p.Available()
+	}
+	for _, id := range b.Selected {
+		if !available[id] {
+			t.PeopleComplete = false
+		}
+	}
 	t.People = []PersonView{}
 	t.SpectatorNames = []string{}
 	for _, p := range b.People {
+		if !p.Available() {
+			continue
+		}
 		t.People = append(t.People, PersonView{p.ID, p.Name, maskPersonValue(p.Card), maskPersonValue(p.Phone), p.Self})
 		for _, id := range b.Selected {
 			if id == p.ID {
@@ -82,7 +95,7 @@ func (s *Service) SavePeopleSelection(id int64, ids []string) error {
 	}
 	allowed := map[string]bool{}
 	for _, p := range b.People {
-		allowed[p.ID] = true
+		allowed[p.ID] = p.Available()
 	}
 	seen := map[string]bool{}
 	for _, id := range ids {

@@ -17,35 +17,48 @@ import (
 )
 
 type inventoryRun struct {
-	queryAt     time.Time
-	ctx         context.Context
-	cancel      context.CancelFunc
-	queryCancel context.CancelFunc
-	business    *businessRun
-	status      string
-	message     string
-	target      time.Time
-	plan        *inventory.Plan
-	task        tasks.Task
-	catalog     tasks.Catalog
-	defaults    []inventory.Region
-	match       protocol.MatchConfig
-	early       bool
+	queryAt       time.Time
+	ctx           context.Context
+	cancel        context.CancelFunc
+	queryCancel   context.CancelFunc
+	business      *businessRun
+	status        string
+	message       string
+	queryError    string
+	target        time.Time
+	plan          *inventory.Plan
+	task          tasks.Task
+	catalog       tasks.Catalog
+	defaults      []inventory.Region
+	match         protocol.MatchConfig
+	people        []business.Person
+	orderPrepared bool
+	orderInFlight bool
+	orderDone     chan struct{}
+	order         *OrderRecord
+	stopRequested bool
+	manualPaused  string
+	retryAt       time.Time
+	early         bool
+	realtime      bool
 }
 type ExecutionView struct {
 	Status  string          `json:"status"`
 	Message string          `json:"message"`
 	Target  time.Time       `json:"target"`
 	Plan    *inventory.Plan `json:"plan,omitempty"`
+	Order   *OrderDisplay   `json:"order,omitempty"`
+	RetryAt time.Time       `json:"retryAt"`
 }
 type InventoryView struct {
-	Match      protocol.MatchConfig    `json:"match"`
-	Settings   inventory.Settings      `json:"settings"`
-	ClockReady bool                    `json:"clockReady"`
-	ClockError string                  `json:"clockError"`
-	OffsetMS   int64                   `json:"offsetMS"`
-	Now        time.Time               `json:"now"`
-	Runs       map[int64]ExecutionView `json:"runs"`
+	Match       protocol.MatchConfig    `json:"match"`
+	Settings    inventory.Settings      `json:"settings"`
+	ClockReady  bool                    `json:"clockReady"`
+	ClockError  string                  `json:"clockError"`
+	OffsetMS    int64                   `json:"offsetMS"`
+	Now         time.Time               `json:"now"`
+	Runs        map[int64]ExecutionView `json:"runs"`
+	SaleStopped bool                    `json:"saleStopped"`
 }
 type inventoryState struct {
 	settings  inventory.Settings
@@ -57,11 +70,19 @@ type inventoryState struct {
 	offset    int64
 	syncError string
 	syncing   bool
+	orders    map[string]*OrderRecord
+	pending   map[int64]*orderAttempt
+	saleStops map[string]bool
+	manual    map[int64]manualRunState
 }
 
 func (s *Service) initInventory() error {
 	s.inventory.settings = inventory.Defaults()
 	s.inventory.runs = map[int64]*inventoryRun{}
+	s.inventory.orders = map[string]*OrderRecord{}
+	s.inventory.pending = map[int64]*orderAttempt{}
+	s.inventory.saleStops = map[string]bool{}
+	s.inventory.manual = map[int64]manualRunState{}
 	raw, err := s.store.Get("inventory-settings.v1")
 	if err != nil {
 		return err
@@ -70,6 +91,9 @@ func (s *Service) initInventory() error {
 		if json.Unmarshal(raw, &s.inventory.settings) != nil || s.inventory.settings.Validate() != nil {
 			return errors.New("库存查询设置无效，请检查本地数据")
 		}
+	}
+	if err := s.loadOrderStateLocked(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -86,9 +110,22 @@ func (s *Service) InventoryView() (InventoryView, error) {
 		return InventoryView{}, err
 	}
 	out := InventoryView{Match: s.session.CurrentMatch, Settings: s.inventory.settings, ClockReady: s.inventory.synced, ClockError: s.inventory.syncError, OffsetMS: s.inventory.offset, Now: s.calibratedNowLocked(), Runs: map[int64]ExecutionView{}}
+	if s.inventory.saleStops[out.Match.ID] {
+		out.SaleStopped = true
+	}
+	s.reconcileMatchRunsLocked(out.Match)
 	for id, r := range s.inventory.runs {
 		// A detached DTO prevents callers from observing mutable run state.
 		v := ExecutionView{Status: r.status, Message: r.message, Target: r.target}
+		v.RetryAt = r.retryAt
+		if r.order != nil {
+			copy := OrderDisplay{ID: r.order.ID, TaskID: r.order.TaskID, Match: r.order.Match, ViewerIDs: append([]string{}, r.order.ViewerIDs...), Viewers: append([]OrderViewer{}, r.order.Viewers...), Plan: r.order.Plan, CreatedAt: r.order.CreatedAt}
+			copy.Plan.Parts = append([]inventory.Allocation{}, r.order.Plan.Parts...)
+			for i := range copy.Viewers {
+				copy.Viewers[i].Phone = ""
+			}
+			v.Order = &copy
+		}
 		if r.plan != nil {
 			p := *r.plan
 			p.Parts = append([]inventory.Allocation{}, r.plan.Parts...)
@@ -158,7 +195,10 @@ func (s *Service) SyncInventoryClock() error {
 }
 func (s *Service) inventoryActiveLocked(id int64) bool {
 	r := s.inventory.runs[id]
-	return r != nil && (r.status == "waiting" || r.status == "monitoring" || r.status == "ready" || r.status == "pending_order")
+	if r != nil && r.status == "maintenance_failed" {
+		return true
+	}
+	return r != nil && (r.orderInFlight || r.status == "maintenance" || r.status == "waiting" || r.status == "monitoring" || r.status == "ready" || r.status == "pending_order" || r.status == "submitting" || r.status == "order_cooldown" || r.status == "order_review" || r.status == "order_verifying" || r.status == "order_blocked")
 }
 func (s *Service) requireInventoryStoppedLocked(id int64) error {
 	if s.inventoryActiveLocked(id) {
@@ -167,15 +207,42 @@ func (s *Service) requireInventoryStoppedLocked(id int64) error {
 	return nil
 }
 func (s *Service) validInventoryLocked(id int64, r *inventoryRun) bool {
-	return s.inventory.runs[id] == r && r.ctx.Err() == nil && s.currentBusinessLocked(id, r.business) && !r.business.busy
+	if r.business != nil && !r.business.offlineSince.IsZero() && time.Since(r.business.offlineSince) >= 18*time.Hour {
+		return false
+	}
+	return s.inventory.runs[id] == r && r.ctx.Err() == nil && r.business != nil && s.currentBusinessLocked(id, r.business) && !r.business.busy
 }
 func (s *Service) stopInventoryLocked(id int64, status, message string) {
 	if r := s.inventory.runs[id]; r != nil {
+		if r.status == "order_created" || r.status == "order_verifying" || r.status == "order_blocked" {
+			return
+		}
+		if r.orderInFlight {
+			r.stopRequested = true
+			if r.queryCancel != nil {
+				r.queryCancel()
+			}
+			s.stopOrderKeysLocked(r.business)
+			if r.cancel != nil {
+				r.cancel()
+			}
+			r.status, r.message = "stopping", "正在停止，等待下单结果"
+			return
+		}
+		if r.business != nil {
+			s.stopOrderKeysLocked(r.business)
+		}
 		r.cancel()
 		r.queryCancel()
 		r.status = status
 		r.message = message
 		r.plan = nil
+		r.orderPrepared = false
+		r.retryAt = time.Time{}
+		r.stopRequested = false
+		if s.inventory.pending[id] != nil {
+			r.status, r.message = "order_verifying", "已停止／下单结果不明，请核实订单"
+		}
 	}
 }
 func (s *Service) cancelInventoryLocked() {
@@ -185,20 +252,43 @@ func (s *Service) cancelInventoryLocked() {
 }
 func (s *Service) reconcileInventoryLocked() {
 	for id, r := range s.inventory.runs {
-		if s.inventoryActiveLocked(id) && !s.validInventoryLocked(id, r) {
+		if r.status == "order_created" || r.status == "order_verifying" || r.status == "order_blocked" || r.status == "order_review" || r.status == "stopping" {
+			continue
+		}
+		if s.inventoryActiveLocked(id) && r.status != "maintenance" && r.status != "maintenance_failed" && !s.validInventoryLocked(id, r) {
 			s.stopInventoryLocked(id, "paused", "账号或业务状态变化，请处理后重新启动")
 			_ = s.tasks.AppendLog(id, "warning", "库存监控已暂停：账号或业务状态变化")
 		}
 	}
 }
 func (s *Service) StartInventory(id int64) error {
+	return s.startInventory(id, false)
+}
+
+func (s *Service) startInventory(id int64, realtime bool) error {
+	return s.startInventoryMode(id, realtime, false)
+}
+func (s *Service) startInventoryMode(id int64, realtime, maintenance bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if maintenance {
+		if !s.maintenanceResume[id] {
+			return nil
+		}
+		s.maintenanceResume[id] = false
+	}
 	if err := s.requireTaskSession(); err != nil {
 		return err
 	}
+	s.reconcileMatchRunsLocked(s.session.CurrentMatch)
 	if s.inventoryActiveLocked(id) {
 		return errors.New("任务已启动")
+	}
+	if r := s.inventory.runs[id]; r != nil && r.order != nil && r.order.Match.ID == s.session.CurrentMatch.ID {
+		return errors.New("请先使用“再次购票”准备新一轮")
+	}
+	if s.inventory.pending[id] != nil {
+		return errors.New("订单结果待核实，请先人工核实")
 	}
 	if !s.inventory.synced {
 		return errors.New("尚未完成时间校准，请先校准")
@@ -206,9 +296,15 @@ func (s *Service) StartInventory(id int64) error {
 	if err := s.session.CurrentMatch.Ready(); err != nil {
 		return err
 	}
+	if s.inventory.saleStops[s.session.CurrentMatch.ID] {
+		return errors.New("本场已停止售票")
+	}
 	b := s.businessRuns[id]
 	if b == nil || !s.currentBusinessLocked(id, b) || b.busy || b.session.Token == "" {
 		return errors.New("请先确保账号在线并完成业务登录")
+	}
+	if !b.offlineSince.IsZero() && time.Since(b.offlineSince) >= 18*time.Hour {
+		return errors.New("协议离线或授权失效已满18小时，请重新授权登录")
 	}
 	view := s.tasks.Snapshot()
 	var task *tasks.Task
@@ -228,9 +324,26 @@ func (s *Service) StartInventory(id int64) error {
 	if !task.PeopleUsable || len(task.PeopleSelected) == 0 {
 		return errors.New("请先选择可用观演人")
 	}
+	peopleData, err := s.tasks.Business(id)
+	if err != nil {
+		return err
+	}
+	available := map[string]bool{}
+	for _, p := range peopleData.People {
+		available[p.ID] = p.Available()
+	}
+	for _, selected := range task.PeopleSelected {
+		if !available[selected] {
+			return errors.New("已选观演人已不存在或不可用，请重新选择")
+		}
+	}
 	monotonicStart := time.Now()
 	now := s.calibratedNowLocked()
 	query, target, early := inventory.Schedule(now, s.session.CurrentMatch.SaleAt, s.inventory.settings)
+	if state, ok := s.inventory.manual[id]; realtime || (ok && state.Match.ID == s.session.CurrentMatch.ID && state.Status == "stopped" && state.Realtime) {
+		realtime = true
+		query, target, early = now, now, false
+	}
 	var defaults []inventory.Region
 	if early {
 		raw, err := readDefaultStock(filepath.Join(s.root, "config", "bill-regions.json"))
@@ -249,10 +362,13 @@ func (s *Service) StartInventory(id int64) error {
 		old.cancel()
 		old.queryCancel()
 	}
+	s.setManualRunLocked(id, &inventoryRun{match: s.session.CurrentMatch, status: "stopped", realtime: realtime})
 	ctx, cancel := context.WithCancel(s.ctx)
 	qctx, qcancel := context.WithCancel(ctx)
 	r := &inventoryRun{ctx: ctx, cancel: cancel, queryCancel: qcancel, business: b, status: "waiting", message: "等待开售后第1秒查询", target: target, task: *task, catalog: view.Catalog, defaults: defaults, match: s.session.CurrentMatch, early: early, queryAt: query}
+	r.people = peopleData.People
 	s.inventory.runs[id] = r
+	s.startOrderKeysLocked(id, b)
 	queryDeadline := monotonicStart.Add(query.Sub(now))
 	targetDeadline := monotonicStart.Add(target.Sub(now))
 	// Durations are captured under the calibration snapshot and timers use monotonic time.
@@ -269,7 +385,7 @@ func (s *Service) StartInventory(id int64) error {
 			}
 		}()
 	}
-	_ = s.tasks.AppendLog(id, "info", "库存任务已启动；首次提交仅调度，订单接口尚未接入")
+	_ = s.tasks.AppendLog(id, "info", "库存任务已启动，按首次目标时间提交完整订单")
 	return nil
 }
 func waitInventory(ctx context.Context, d time.Duration) bool {
@@ -291,8 +407,65 @@ func (s *Service) StopInventory(id int64) error {
 	if err := s.requireTaskSession(); err != nil {
 		return err
 	}
+	if s.maintenanceResume != nil {
+		s.maintenanceResume[id] = false
+	}
+	r := s.inventory.runs[id]
+	if r != nil && (r.status == "order_created" || r.status == "order_verifying" || r.status == "order_blocked") {
+		return nil
+	}
+	if r != nil && r.orderInFlight {
+		r.stopRequested = true
+		r.queryCancel()
+		s.stopOrderKeysLocked(r.business)
+		r.cancel()
+		r.status, r.message = "stopping", "正在停止，等待下单结果"
+		return s.tasks.AppendLog(id, "info", r.message)
+	}
 	s.stopInventoryLocked(id, "stopped", "已停止")
 	return s.tasks.AppendLog(id, "info", "库存任务已停止，已清除本轮方案与定时")
+}
+
+func (s *Service) SetSaleStopped(stopped bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireTaskSession(); err != nil {
+		return err
+	}
+	match := s.session.CurrentMatch
+	if s.inventory.saleStops == nil {
+		s.inventory.saleStops = map[string]bool{}
+	}
+	key := "sale-stopped.v1." + match.ID
+	if stopped {
+		if err := s.store.Put(key, []byte("1")); err != nil {
+			return errors.New("本场停止售票状态保存失败")
+		}
+		s.inventory.saleStops[match.ID] = true
+		for id, r := range s.inventory.runs {
+			if r.match.ID == match.ID {
+				s.maintenanceResume[id] = false
+			}
+			if r.match.ID != match.ID || !s.inventoryActiveLocked(id) {
+				continue
+			}
+			if r.orderInFlight {
+				r.stopRequested = true
+				r.queryCancel()
+				s.stopOrderKeysLocked(r.business)
+				r.cancel()
+				r.status, r.message = "stopping", "正在停止，等待下单结果"
+			} else {
+				s.stopInventoryLocked(id, "stopped", "本场已停止售票")
+			}
+		}
+	} else {
+		if err := s.store.Delete(key); err != nil {
+			return errors.New("本场停止售票状态清除失败")
+		}
+		delete(s.inventory.saleStops, match.ID)
+	}
+	return nil
 }
 func (s *Service) SaveTaskCross(id int64, value bool) error {
 	s.mu.Lock()
@@ -306,7 +479,7 @@ func (s *Service) SaveTaskCross(id int64, value bool) error {
 	return s.tasks.SaveCross(id, value)
 }
 func (s *Service) inventoryDueLocked(id int64, r *inventoryRun) {
-	if !s.validInventoryLocked(id, r) || r.status == "pending_order" {
+	if !s.validInventoryLocked(id, r) || !r.early || (r.status != "waiting" && r.status != "monitoring" && r.status != "ready") {
 		return
 	}
 	if r.plan == nil {
@@ -324,13 +497,17 @@ func (s *Service) inventoryDueLocked(id int64, r *inventoryRun) {
 }
 
 func (s *Service) stageInventoryOrderLocked(id int64, r *inventoryRun) {
-	if s.inventory.runs[id] != r || r.ctx.Err() != nil || r.plan == nil || r.status == "pending_order" {
+	if s.inventory.runs[id] != r || r.ctx.Err() != nil || r.plan == nil || (r.status != "ready" && r.status != "monitoring" && r.status != "waiting") {
 		return
 	}
 	r.queryCancel()
+	r.early = false
 	r.status = "pending_order"
-	r.message = "首次提交时间已到，待接入下单接口（未发送订单）"
-	_ = s.tasks.AppendLog(id, "success", fmt.Sprintf("首次提交调度已到点，方案来源：%s；下单接口未接入，未发送订单", r.plan.Source))
+	r.message = "等待下单参数"
+	_ = s.tasks.AppendLog(id, "info", fmt.Sprintf("准备创建订单，方案来源：%s", r.plan.Source))
+	if r.business != nil {
+		s.waitOrderParametersLocked(id, r)
+	}
 }
 func (s *Service) deliverInventoryLocked(source int64, regions []inventory.Region, at time.Time) {
 	// All receivers match the same immutable snapshot with their own conditions.
@@ -370,10 +547,9 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 	if !waitInventory(ctx, time.Until(deadline)) {
 		return
 	}
-	failures := 0
 	for {
 		s.mu.Lock()
-		if !s.validInventoryLocked(id, r) || r.plan != nil {
+		if ctx.Err() != nil || !s.validInventoryLocked(id, r) || r.plan != nil || (r.status != "waiting" && r.status != "monitoring") {
 			s.mu.Unlock()
 			return
 		}
@@ -382,7 +558,7 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 		cfg, session := s.session.BusinessConfig, r.business.session
 		s.mu.Unlock()
 		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		raw, err := s.businessClient.Stock(callCtx, cfg, session, r.match.ID)
+		raw, err := s.businessClient.Stock(s.taskNetworkContext(callCtx, id), cfg, session, r.match.ID)
 		cancel()
 		var regions []inventory.Region
 		if err == nil {
@@ -393,16 +569,11 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 			s.mu.Unlock()
 			return
 		}
-		if business.IsTokenExpired(err) {
-			s.stopInventoryLocked(id, "paused", "业务登录失效，请刷新后重新启动")
-			s.mu.Unlock()
-			return
-		}
 		if err == nil {
-			if failures > 0 {
+			if r.queryError != "" {
 				_ = s.tasks.AppendLog(id, "info", "库存查询已恢复")
 			}
-			failures = 0
+			r.queryError = ""
 			r.message = "暂无符合条件的库存"
 			// Zero snapshots do not produce notifications.
 			for _, region := range regions {
@@ -412,26 +583,30 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 				}
 			}
 		} else {
-			failures++
-			r.message = "库存查询异常，正在重试（不表示零库存）"
-			if failures == 1 {
-				_ = s.tasks.AppendLog(id, "warning", r.message)
-			}
+			s.recordInventoryQueryErrorLocked(id, r, err)
 		}
 		settings := s.inventory.settings
 		delay := time.Duration(inventory.Between(settings.QueryMinMS, settings.QueryMaxMS)) * time.Millisecond
-		if failures > 0 {
-			backoff := time.Second * time.Duration(1<<min(failures-1, 3))
-			if delay < backoff {
-				delay = backoff
-			}
-		}
 		done := r.plan != nil
 		s.mu.Unlock()
 		if done || !waitInventory(ctx, delay) {
 			return
 		}
 	}
+}
+
+// Query errors only affect the hint. They never cancel the run or its default-stock deadline.
+func (s *Service) recordInventoryQueryErrorLocked(id int64, r *inventoryRun, err error) {
+	message := "库存查询异常，按配置间隔继续查询（不表示零库存）"
+	var apiErr *business.APIError
+	if errors.As(err, &apiErr) {
+		message = fmt.Sprintf("库存查询异常（HTTP %d，业务码 %d），按配置间隔继续查询", apiErr.HTTP, apiErr.Code)
+	}
+	r.message = message
+	if r.queryError != message {
+		_ = s.tasks.AppendLog(id, "warning", message)
+	}
+	r.queryError = message
 }
 
 func (s *Service) inventoryClockLoop() {

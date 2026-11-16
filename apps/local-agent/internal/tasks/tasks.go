@@ -59,6 +59,7 @@ type Task struct {
 	PeopleSelected  []string         `json:"peopleSelected"`
 	SpectatorNames  []string         `json:"spectatorNames"`
 	PeopleUsable    bool             `json:"peopleUsable"`
+	PeopleComplete  bool             `json:"peopleComplete"`
 	Note            string           `json:"note"`
 	ShippingAddress *ShippingAddress `json:"shippingAddress,omitempty"`
 
@@ -282,6 +283,17 @@ func (s *Service) ResetIDs() error {
 func (s *Service) SaveSeats(id int64, mode string, selected []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.savePurchaseLocked(id, mode, selected, nil)
+}
+func (s *Service) SavePurchaseConfiguration(id int64, mode string, seats, people []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(people) == 0 {
+		return errors.New("请选择至少一位观演人")
+	}
+	return s.savePurchaseLocked(id, mode, seats, people)
+}
+func (s *Service) savePurchaseLocked(id int64, mode string, selected, people []string) error {
 	if s.configError != "" {
 		return errors.New(s.configError)
 	}
@@ -312,6 +324,24 @@ func (s *Service) SaveSeats(id int64, mode string, selected []string) error {
 		}
 	}
 	next := s.clone()
+	if people != nil {
+		b := next.Business[id]
+		if !b.Usable {
+			return errors.New("业务账号尚未就绪，请先刷新")
+		}
+		allowed, seen := map[string]bool{}, map[string]bool{}
+		for _, p := range b.People {
+			allowed[p.ID] = p.Available()
+		}
+		for _, p := range people {
+			if !allowed[p] || seen[p] {
+				return errors.New("观演人已不存在或不可用，请重新选择")
+			}
+			seen[p] = true
+		}
+		b.Selected = append([]string{}, people...)
+		next.Business[id] = b
+	}
 	for i := range next.Tasks {
 		if next.Tasks[i].ID == id {
 			t := &next.Tasks[i]

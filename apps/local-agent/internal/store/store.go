@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"robot/apps/local-agent/internal/secure"
+	"strings"
 )
 
 type Store struct{ db *sql.DB }
@@ -70,6 +71,37 @@ func (s *Store) Put(name string, plain []byte) error {
 func (s *Store) Delete(name string) error {
 	_, err := s.db.Exec("DELETE FROM settings WHERE name=?", name)
 	return err
+}
+
+func (s *Store) ListPrefix(prefix string) (map[string][]byte, error) {
+	rows, err := s.db.Query("SELECT name,value FROM settings WHERE name LIKE ? ESCAPE '\\'", escapeLike(prefix)+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string][]byte)
+	for rows.Next() {
+		var name string
+		var sealed []byte
+		if err = rows.Scan(&name, &sealed); err != nil {
+			return nil, err
+		}
+		plain, openErr := secure.Unprotect(sealed)
+		if openErr != nil {
+			return nil, openErr
+		}
+		out[name] = plain
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func escapeLike(value string) string {
+	value = strings.ReplaceAll(value, "\\", "\\\\")
+	value = strings.ReplaceAll(value, "%", "\\%")
+	return strings.ReplaceAll(value, "_", "\\_")
 }
 func (s *Store) ReplaceConfig(plain []byte) error {
 	sealed, err := secure.Protect(plain)

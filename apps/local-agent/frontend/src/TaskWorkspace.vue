@@ -1,11 +1,25 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import InventoryPanel from './InventoryPanel.vue'
-import type { InventoryView } from './bridge'
+import type { InventoryView, OrderDisplay } from './bridge'
 import ScanAuthorization from './ScanAuthorization.vue'
 import { confirmDialog } from './dialogKeyboard'
 import { backend, type State, type Person, type Task, type TaskView, type ProtocolStatus, type AuthAttempt, type AddressForm } from './bridge'
 const inventoryView = ref<InventoryView | null>(null)
+const historyOrders = ref<OrderDisplay[]>([])
+const ordersDialog = ref<HTMLDialogElement | null>(null)
+const ordersBusy = ref(false), ordersError = ref('')
+async function showOrders() {
+ ordersBusy.value = true; ordersError.value = ''
+ try { await nextTick(); ordersDialog.value?.showModal(); historyOrders.value = await backend().GetOrderHistory() }
+ catch (e) { ordersError.value = failure(e) } finally { ordersBusy.value = false }
+}
+async function deleteOrder(record: OrderDisplay) {
+ if (!window.confirm(`仅删除本地订单记录 ${record.id}，不会取消或更改官方订单。确定删除吗？`)) return
+ ordersBusy.value = true; ordersError.value = ''
+ try { await backend().DeleteOrderRecord(record.taskId, record.id); historyOrders.value = historyOrders.value.filter(o => !(o.taskId === record.taskId && o.id === record.id)); inventoryView.value = await backend().GetInventory() }
+ catch (e) { ordersError.value = failure(e) } finally { ordersBusy.value = false }
+}
 const executionBusy = ref<number[]>([])
 type BulkAction = 'start' | 'stop' | 'refresh'
 const bulkAction = ref<BulkAction | null>(null), bulkDone = ref(0), bulkTotal = ref(0)
@@ -14,10 +28,10 @@ const bulkLabels: Record<BulkAction, string> = { start: '全部启动', stop: '�
 const bulkBlocked = computed(() => !!bulkAction.value || loading.value || creating.value || saving.value || protocolBusy.value || executionBusy.value.length > 0 || refreshingTasks.value.length > 0)
 function bulkTargets(action: BulkAction) {
  return view.value.tasks.filter(task => {
-  if (action === 'stop') return !!inventoryView.value?.runs[task.id] && inventoryView.value.runs[task.id].status !== 'stopped'
-  if (running(task.id)) return false
-  if (action === 'refresh') return task.protocolStatus === 'alive' && task.businessStatus !== 'loading'
-  return !!inventoryView.value?.clockReady && !!inventoryView.value?.match.enabled && !view.value.configError && !task.paused && task.protocolStatus === 'alive' && task.businessStatus === 'ready' && task.seatValid && task.selected.length > 0 && task.peopleUsable && !!task.peopleSelected?.length
+  if (action === 'stop') return !!inventoryView.value?.runs[task.id] && !['stopped','order_created','order_verifying','order_blocked'].includes(inventoryView.value.runs[task.id].status)
+  if ((action !== 'refresh' && running(task.id)) || (action === 'start' && inventoryView.value?.runs[task.id]?.status === 'order_created')) return false
+  if (action === 'refresh') return !['order_verifying','order_blocked','order_review','stopping'].includes(inventoryView.value?.runs[task.id]?.status || '') && task.protocolStatus === 'alive' && task.businessStatus !== 'loading'
+  return !!inventoryView.value?.clockReady && !!inventoryView.value?.match.enabled && !view.value.configError && !task.paused && task.protocolStatus === 'alive' && task.businessStatus === 'ready' && task.seatValid && task.selected.length > 0 && task.peopleUsable && task.peopleComplete !== false && !!task.peopleSelected?.length
  })
 }
 async function runBulk(action: BulkAction) {
@@ -47,13 +61,47 @@ async function runBulk(action: BulkAction) {
   bulkReport.value = `${bulkLabels[action]}完成：${action === 'refresh' ? '已提交刷新' : '成功'} ${succeeded} 个${targets.length - succeeded ? `，失败 ${targets.length - succeeded} 个` : ''}${skipped ? `，跳过 ${skipped} 个不符合条件的任务` : ''}`
  } finally { bulkAction.value = null }
 }
-const executionLabels: Record<string,string> = {waiting:'等待开售',monitoring:'库存监控中',ready:'待下单',pending_order:'待接入下单',stopped:'已停止',paused:'异常暂停'}
-function running(id: number) { return ['waiting','monitoring','ready','pending_order'].includes(inventoryView.value?.runs[id]?.status || '') }
+const executionLabels: Record<string,string> = {waiting:'等待开售',monitoring:'库存监控中',ready:'待下单',pending_order:'等待下单参数',submitting:'正在创建订单',stopping:'正在停止，等待下单结果',maintenance:'维护中',maintenance_failed:'维护失败',order_cooldown:'等待恢复查询',order_created:'创建成功／待支付',order_review:'下单待核实',order_verifying:'订单核实中',order_blocked:'购票已暂停',stopped:'已停止',paused:'异常暂停'}
+function running(id: number) { return ['waiting','monitoring','ready','pending_order','submitting','stopping','maintenance','maintenance_failed','order_cooldown','order_review','order_verifying','order_blocked'].includes(inventoryView.value?.runs[id]?.status || '') }
 async function toggleExecution(task: Task) {
  if(bulkAction.value || executionBusy.value.includes(task.id)) return
+ const run = inventoryView.value?.runs[task.id]
+ if (run?.status === 'order_created') { openRepurchase(task); return }
+ if (run?.status === 'order_verifying' || run?.status === 'order_blocked') { openRecovery(task); return }
  executionBusy.value.push(task.id); error.value = ''
  try { if(running(task.id)) await backend().StopInventory(task.id); else await backend().StartInventory(task.id); inventoryView.value = await backend().GetInventory(); await load() }
  catch(e) { error.value = `任务 ${task.id}：${failure(e)}` } finally {executionBusy.value=executionBusy.value.filter(id=>id!==task.id)}
+}
+const repurchasePeople = ref<string[]>([]), repurchaseSeats = ref<string[]>([]), repurchaseMode = ref<'tier'|'area'>('tier')
+function openRepurchase(task: Task) {
+ activeID.value = task.id; modal.value = 'repurchase'; saveError.value = ''
+ repurchasePeople.value = [...(task.peopleSelected || [])]; repurchaseMode.value = task.mode
+ repurchaseSeats.value = [...task.selected]
+ void nextTick(() => dialog.value?.showModal())
+}
+function openRecovery(task: Task) {
+ activeID.value = task.id; modal.value = 'recover'; saveError.value = ''
+ void nextTick(() => dialog.value?.showModal())
+}
+const repurchaseSeatChoices = computed(() => repurchaseMode.value === 'tier'
+  ? view.value.catalog.tiers.map(t => ({ value: t.tier, label: `${t.tier} · ¥${t.price}` }))
+  : view.value.catalog.tiers.flatMap(t => t.areas.filter(a => a.isSaleable).map(a => ({ value: a.code, label: `${a.code} · ${t.tier}` }))) )
+function toggleRepurchaseChoice(list: string[], value: string) {
+ const i = list.indexOf(value); if (i >= 0) list.splice(i, 1); else list.push(value)
+}
+async function saveRepurchase() {
+ if (!active.value || saving.value) return
+ saving.value = true; saveError.value = ''
+ try { await backend().PrepareRepurchase(active.value.id, repurchasePeople.value, repurchaseSeats.value, repurchaseMode.value); await load(); inventoryView.value = await backend().GetInventory(); saving.value = false; close() }
+ catch (e) { saveError.value = failure(e) } finally { saving.value = false }
+}
+async function recoverRun() {
+ if (!active.value || saving.value) return
+ const id = active.value.id, status = inventoryView.value?.runs[id]?.status
+ const action = status === 'order_verifying' ? 'confirm-not-created' : 'resolved'
+ saving.value = true; saveError.value = ''
+ try { await backend().RecoverInventory(id, action); inventoryView.value = await backend().GetInventory(); await load(); saving.value = false; close() }
+ catch (e) { saveError.value = failure(e) } finally { saving.value = false }
 }
 const crossSaving = ref(false), crossError = ref('')
 async function setCross(task: Task, value: boolean) {
@@ -113,7 +161,7 @@ async function beginAuth() {
   try { const result = await backend().BeginAuthorization(id); if (modal.value === 'auth' && activeID.value === id) attempt.value = result }
   catch (e) { saveError.value = failure(e) } finally { saving.value = false }
 }
-const modal = ref<'note' | 'address' | 'logs' | 'seat' | 'people' | 'auth' | 'reauth' | 'delete' | null>(null), activeID = ref<number | null>(null)
+const modal = ref<'note' | 'address' | 'logs' | 'seat' | 'people' | 'auth' | 'reauth' | 'delete' | 'recover' | 'repurchase' | null>(null), activeID = ref<number | null>(null)
 const dialog = ref<HTMLDialogElement | null>(null)
 const draft = ref<{ mode: 'tier' | 'area'; selected: string[] }>({ mode: 'tier', selected: [] })
 const emptyAddress = (): AddressForm => ({ province: '', city: '', district: '', address: '', name: '', phone: '', region: [] })
@@ -153,7 +201,7 @@ async function refreshPeople(login = false) {
 }
 async function togglePerson(id: string, checked: boolean) {
  if (!active.value || saving.value) return
- const task = active.value; const ids = (task.peopleSelected || []).filter(value => value !== id)
+ const task = active.value; const available = new Set((task.people || []).map(p => p.id)); const ids = (task.peopleSelected || []).filter(value => value !== id && available.has(value))
  if(checked) ids.push(id)
  saving.value = true; saveError.value = ''
  try {await backend().SaveTaskPeople(task.id, ids); await load()}
@@ -174,8 +222,8 @@ const areas = computed(() => view.value.catalog.tiers.flatMap(t => t.areas.filte
 const groups = computed(() => ['首层', '顶层', 'VIP'].map(name => ({ name, areas: areas.value.filter(a => name === 'VIP' ? a.tier === 'VIP' : a.tier !== 'VIP' && a.level === (name === '首层' ? '首层看台' : '顶层看台')) })))
 const selectedLabel = (t: Task) => t.selected.join('、') || '未配置'
 function taskStatus(task: Task) {
- const run=inventoryView.value?.runs[task.id]; if(run && run.status!=="stopped") return {label:executionLabels[run.status] || run.status,tone:run.status==="paused"?"warning":"pending",detail:run.message + (run.target && !run.target.startsWith("0001-") ? " · 首次提交 " + new Date(run.target).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false}) : "") + (run.plan ? " · " + run.plan.parts.map(p=>`${p.region.name}区 ${p.quantity}张`).join(" + ") : "")}
- if (task.protocolStatus === 'expired') return { label: '需重新授权', tone: 'warning', detail: '授权已失效，请重新扫码' }
+ const run=inventoryView.value?.runs[task.id]; if(run && run.status!=="stopped") return {label:executionLabels[run.status] || run.status,tone:['paused','order_review','order_cooldown','order_verifying','order_blocked'].includes(run.status)?"warning":run.status==='order_created'?"ready":"pending",detail:run.message + (run.retryAt && !run.retryAt.startsWith("0001-") ? " · 恢复查询 " + new Date(run.retryAt).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false}) : "") + (run.target && !run.target.startsWith("0001-") ? " · 首次提交 " + new Date(run.target).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false}) : "") + (run.plan ? " · " + run.plan.parts.map(p=>`${p.region.name}区 ${p.quantity}张`).join(" + ") : "")}
+ if (task.protocolStatus === 'expired') return { label: '需重新授权', tone: 'warning', detail: task.businessStatus === 'blocked' ? (task.businessMessage || '授权已失效，请重新扫码') : '授权已失效，请重新扫码' }
  if (!task.protocolStatus) return { label: '待授权', tone: 'neutral', detail: '扫码绑定微信账号' }
  if (task.paused) return { label: '维护已暂停', tone: 'neutral', detail: '点击刷新可恢复业务维护' }
  if (task.protocolStatus !== 'alive') return { label: '检查中', tone: 'pending', detail: '等待确认微信登录状态' }
@@ -183,6 +231,7 @@ function taskStatus(task: Task) {
  if (task.businessStatus === 'failed' || task.businessStatus === 'config_error' || task.businessStatus === 'blocked') return { label: '需处理', tone: 'warning', detail: task.businessMessage || '业务暂不可用，请刷新重试' }
  if (!task.seatValid || !task.selected.length) return { label: '待配置', tone: 'warning', detail: '请选择座位要求' }
  if (!task.peopleUsable) return { label: '待就绪', tone: 'pending', detail: task.businessMessage || '等待业务登录' }
+ if (task.peopleComplete === false) return { label: '待配置', tone: 'warning', detail: '已选观演人已不存在或不可用，请重新选择' }
  if (!task.peopleSelected?.length) return { label: '待配置', tone: 'warning', detail: '请选择观演人' }
  return { label: '已就绪', tone: 'ready', detail: '账号与配置已就绪' }
 }
@@ -192,7 +241,7 @@ const filteredTasks = computed(() => view.value.tasks.filter(task => {
   const text = [String(task.id), task.wechatNickname || '', task.note || '', ...(task.spectatorNames || [])].join(' ').toLocaleLowerCase()
   return searchTerms.value.every(term => text.includes(term))
 }))
-const logLabels: Record<string, string> = { info: '普通', success: '成功', warning: '提醒', error: '失败' }
+const logLabels: Record<string, string> = {debug: '调试', info: '普通', success: '成功', warning: '提醒', error: '失败' }
 const logEntries = computed(() => active.value?.logs || (active.value?.latest ? [active.value.latest] : []))
 const copyNotice = ref(''), copying = ref(false)
 const logList = ref<HTMLElement | null>(null)
@@ -236,7 +285,7 @@ async function createTask() {
 }
 async function open(t: Task, kind: NonNullable<typeof modal.value>) {
 
-  if (running(t.id) && ['seat','people','auth','reauth','delete'].includes(kind)) { error.value='请先停止任务，再修改执行配置'; return }
+  if (running(t.id) && ['seat','people','delete'].includes(kind)) { error.value='请先停止任务，再修改执行配置'; return }
   if (kind === 'auth' && t.protocolStatus === 'alive') kind = 'reauth'
   clearPersonDetails()
   crossError.value = ''; copyNotice.value = ''; newLogs.value = false; logAtTop.value = true; activeID.value = t.id; modal.value = kind; saveError.value = ''; tip.value = null
@@ -244,7 +293,7 @@ async function open(t: Task, kind: NonNullable<typeof modal.value>) {
   noteDraft.value = t.note || ''
   addressDraft.value = t.shippingAddress ? { ...t.shippingAddress.form, region: [...t.shippingAddress.form.region] } : emptyAddress()
   await nextTick(); dialog.value?.showModal()
-  if (running(t.id) && ['seat','people','auth','reauth','delete'].includes(kind)) { error.value='请先停止任务，再修改执行配置'; return }
+  if (running(t.id) && ['seat','people','delete'].includes(kind)) { error.value='请先停止任务，再修改执行配置'; return }
   if (kind === 'auth') await beginAuth()
 }
 async function confirmReauthorization() {
@@ -256,6 +305,8 @@ function confirmTaskDialog() {
   if (saving.value || crossSaving.value) return
   if (modal.value === 'reauth') { void confirmReauthorization(); return }
   if (modal.value === 'delete') { void deleteTask(); return }
+  if (modal.value === 'recover') { void recoverRun(); return }
+  if (modal.value === 'repurchase') { void saveRepurchase(); return }
   if (modal.value === 'note' || modal.value === 'address') return
   close()
 }
@@ -328,7 +379,8 @@ async function deleteTask() {
               <button class="tw-primary" :disabled="creating || loading || !!bulkAction" @click="createTask">＋ {{ creating ? '正在创建…' : '新建任务' }}</button>
               <button :disabled="bulkBlocked || !bulkTargets('start').length" title="启动全部已就绪且未运行的任务，不受搜索过滤影响" @click="runBulk('start')">全部启动</button>
               <button :disabled="bulkBlocked || !bulkTargets('stop').length" title="停止全部尚未停止的任务，不受搜索过滤影响" @click="runBulk('stop')">全部停止</button>
-              <button :disabled="bulkBlocked || !bulkTargets('refresh').length" title="刷新全部在线且未运行的任务，不受搜索过滤影响" @click="runBulk('refresh')">全部刷新</button>
+              <button :disabled="bulkBlocked || !bulkTargets('refresh').length" title="刷新全部可维护的在线任务，原运行任务完成后自动恢复" @click="runBulk('refresh')">全部刷新</button>
+              <button :disabled="loading || !!bulkAction || ordersBusy" @click="showOrders">订单记录</button>
               <button :disabled="settingsDisabled || !!bulkAction" aria-haspopup="dialog" @click="openSettings()">设置</button>
             </div>
           </div>
@@ -350,9 +402,9 @@ async function deleteTask() {
           <button class="tw-summary tw-note-summary" aria-haspopup="dialog" :title="task.note || '添加备注或特殊说明'" @click="open(task, 'note')"><span class="tw-field">备注</span><span class="tw-value">{{ task.note || '添加备注或特殊说明' }}</span></button>
           <button class="tw-log" :class="{ 'tw-log-error': task.latest?.level === 'error' || task.latest?.level === 'warning' }" type="button" aria-haspopup="dialog" :aria-label="`查看任务 ${task.id} 的操作日志`" :title="task.latest?.text || '查看操作日志'" @click="open(task, 'logs')"><template v-if="task.latest"><time :datetime="task.latest.at">{{ clock(task.latest.at) }}</time><span>{{ task.latest.text }}</span></template><span v-else>暂无操作日志</span></button>
           <div class="tw-task-operations" role="group" :aria-label="`任务 ${task.id} 操作`">
-            <button class="tw-start" :disabled="!!bulkAction || executionBusy.includes(task.id) || (!running(task.id) && (!inventoryView?.clockReady || !inventoryView?.match.enabled))" @click="toggleExecution(task)">{{ running(task.id) ? "停止" : "启动" }}</button>
-            <button :disabled="!!bulkAction || running(task.id) || refreshingTasks.includes(task.id) || task.businessStatus === 'loading' || task.protocolStatus !== 'alive'" :title="task.paused ? '恢复业务维护并刷新观演人' : '重新登录业务并刷新观演人'" @click="refreshTask(task)">{{ refreshingTasks.includes(task.id) || task.businessStatus === 'loading' ? '刷新中…' : '刷新' }}</button>
-            <button :disabled="!!bulkAction || running(task.id)" @click="open(task, 'auth')">{{ task.protocolStatus ? '重新授权' : '开始授权' }}</button>
+            <button class="tw-start" :disabled="!!bulkAction || executionBusy.includes(task.id) || (inventoryView?.runs[task.id]?.status === 'stopping') || (!running(task.id) && inventoryView?.runs[task.id]?.status !== 'order_created' && inventoryView?.runs[task.id]?.status !== 'order_verifying' && inventoryView?.runs[task.id]?.status !== 'order_blocked' && (!inventoryView?.clockReady || !inventoryView?.match.enabled))" @click="toggleExecution(task)">{{ inventoryView?.runs[task.id]?.status === 'order_created' ? '再次购票' : ['order_verifying','order_blocked'].includes(inventoryView?.runs[task.id]?.status || '') ? '恢复监控' : inventoryView?.runs[task.id]?.status === 'stopping' ? '正在停止…' : running(task.id) ? '停止' : '启动' }}</button>
+            <button :disabled="!!bulkAction || refreshingTasks.includes(task.id) || task.businessStatus === 'loading' || task.protocolStatus !== 'alive'" :title="task.paused ? '恢复业务维护并刷新观演人' : '重新登录业务并刷新观演人'" @click="refreshTask(task)">{{ refreshingTasks.includes(task.id) || task.businessStatus === 'loading' ? '刷新中…' : '刷新' }}</button>
+            <button :disabled="!!bulkAction || task.businessStatus === 'loading'" @click="open(task, 'auth')">{{ task.protocolStatus ? '重新授权' : '开始授权' }}</button>
             <button :title="task.shippingAddress ? '收货地址已配置' : '收货地址未配置'" @click="open(task, 'address')">收货地址</button>
             <button :disabled="!!bulkAction || running(task.id)" class="tw-operation-delete" @click="open(task, 'delete')">删除</button>
           </div>
@@ -361,9 +413,9 @@ async function deleteTask() {
       <footer class="tw-footer"><span>配置自动保存 · 当前客户端共享</span><span>曜石橙</span></footer>
     </section>
     <div v-if="tip" role="tooltip" class="tw-tooltip" :style="{ left: `${tip.left}px`, top: `${tip.top}px` }">{{ tip.text }}</div>
-    <dialog ref="dialog" class="tw-dialog" :class="{ wide: modal === 'seat' || modal === 'logs', 'tw-log-dialog': modal === 'logs', 'tw-scan-dialog': modal === 'auth' }" aria-labelledby="tw-dialog-title" @cancel.prevent="close()" @keydown="!['auth', 'note', 'address', 'people'].includes(modal || '') && confirmDialog($event, confirmTaskDialog)">
+    <dialog ref="dialog" class="tw-dialog" :class="{ wide: modal === 'seat' || modal === 'logs', 'tw-log-dialog': modal === 'logs', 'tw-scan-dialog': modal === 'auth' }" aria-labelledby="tw-dialog-title" @cancel.prevent="close()" @keydown="!['auth', 'note', 'address', 'people', 'recover'].includes(modal || '') && confirmDialog($event, confirmTaskDialog)">
       <template v-if="modal && active">
-        <div class="tw-dialog-head"><div><h2 id="tw-dialog-title">{{ modal === 'note' ? '任务备注' : modal === 'address' ? '收货地址' : modal === 'logs' ? '操作日志' : modal === 'seat' ? '座位要求' : modal === 'people' ? '观演人' : modal === 'delete' ? '删除任务' : modal === 'reauth' ? '确认重新授权' : '授权账号' }}</h2><p>编号 {{ active.id }}<template v-if="modal === 'logs'"> · {{ logEntries.length }} / 500 条</template><template v-if="modal === 'seat'"> · {{ view.catalog.stadium }}</template></p></div><button class="tw-close" aria-label="关闭弹窗" :disabled="saving || crossSaving || (modal === 'seat' && !!saveError)" @click="close()">×</button></div>
+        <div class="tw-dialog-head"><div><h2 id="tw-dialog-title">{{ modal === 'note' ? '任务备注' : modal === 'address' ? '收货地址' : modal === 'logs' ? '操作日志' : modal === 'seat' ? '座位要求' : modal === 'people' ? '观演人' : modal === 'delete' ? '删除任务' : modal === 'reauth' ? '确认重新授权' : modal === 'recover' ? '恢复监控' : modal === 'repurchase' ? '再次购票' : '授权账号' }}</h2><p>编号 {{ active.id }}<template v-if="modal === 'logs'"> · {{ logEntries.length }} / 500 条</template><template v-if="modal === 'seat'"> · {{ view.catalog.stadium }}</template></p></div><button class="tw-close" aria-label="关闭弹窗" :disabled="saving || crossSaving || (modal === 'seat' && !!saveError)" @click="close()">×</button></div>
         <div class="tw-dialog-content">
           <form v-if="modal === 'note' || modal === 'address'" id="task-details-form" @submit.prevent="saveDetails()">
             <fieldset :disabled="saving" class="tw-details-form">
@@ -414,17 +466,30 @@ async function deleteTask() {
           </template>
           <template v-else-if="modal === 'people'">
  <p role="status">{{ active.businessMessage || '授权账号后自动获取观演人' }}</p>
+ <p v-if="active.peopleComplete === false" class="tw-note">已选观演人中有人已不存在或不可用，请重新选择完整购票人员。</p>
  <p v-if="!active.peopleUsable" class="tw-note">{{ active.paused && active.protocolStatus === 'alive' ? '账号已在线，点击任务卡片操作区的“刷新”可恢复任务并获取观演人。' : '当前观演人暂不可选，原列表及勾选保留，业务登录和刷新成功后恢复。' }}</p>
  <div class="tw-people-actions"><button :disabled="saving || active.businessStatus === 'loading' || active.protocolStatus !== 'alive' || active.paused" @click="refreshPeople(false)">刷新观演人</button><button v-if="active.protocolStatus !== 'alive'" @click="open(active, 'auth')">前往授权</button></div>
  <p v-if="active.peopleUsable && !active.people?.length">此账号暂无观演人。</p>
  <div v-for="person in active.people || []" :key="person.id" class="tw-person"><label class="tw-person-choice"><input type="checkbox" :disabled="saving || !active.peopleUsable" :checked="active.peopleSelected?.includes(person.id)" @change="togglePerson(person.id, ($event.target as HTMLInputElement).checked)"/><span><strong>{{ person.name }}{{ person.self ? '（本人）' : '' }}</strong><small v-if="!personDetails[person.id]">{{ person.card }} · {{ person.phone }}</small><template v-else><small>证件号码：{{ personDetails[person.id].card || '未提供' }}</small><small>手机号：{{ personDetails[person.id].phone || '未提供' }}</small><small v-if="personDetails[person.id].card.includes('*') || personDetails[person.id].phone.includes('*')">接口仅返回脱敏信息，暂无法显示完整内容。</small></template></span></label><button type="button" class="tw-person-details" :disabled="personLoading.includes(person.id)" :aria-expanded="!!personDetails[person.id]" @click="togglePersonDetails(person.id)">{{ personLoading.includes(person.id) ? '读取中…' : personDetails[person.id] ? '收起' : '显示完整信息' }}</button></div>
  <p class="tw-note">首次获取默认不勾选；选择后自动保存。</p><p v-if="saveError" class="tw-alert" role="alert">{{ saveError }}</p>
  </template>
+          <template v-else-if="modal === 'repurchase'">
+            <p class="tw-alert">请确认已有订单已妥善处理，再开始新一轮购票。历史创建记录不限制再次选择同一观演人。</p>
+            <fieldset class="tw-options" aria-label="选择本轮观演人"><legend>本轮观演人</legend><label v-for="person in active.people || []" :key="person.id" class="tw-choice" :class="{checked:repurchasePeople.includes(person.id)}"><input type="checkbox" :checked="repurchasePeople.includes(person.id)" @change="toggleRepurchaseChoice(repurchasePeople, person.id)"/><span>{{ person.name }}{{ person.self ? '（本人）' : '' }}</span></label></fieldset>
+            <div class="tw-switch" role="group" aria-label="座位选择模式"><button :aria-pressed="repurchaseMode === 'tier'" @click="repurchaseMode='tier';repurchaseSeats=[]">指定票类</button><button :aria-pressed="repurchaseMode === 'area'" @click="repurchaseMode='area';repurchaseSeats=[]">固定区域</button></div>
+            <fieldset class="tw-tier-options" aria-label="本轮座位要求"><label v-for="choice in repurchaseSeatChoices" :key="choice.value" class="tw-choice" :class="{checked:repurchaseSeats.includes(choice.value)}"><input type="checkbox" :checked="repurchaseSeats.includes(choice.value)" @change="toggleRepurchaseChoice(repurchaseSeats, choice.value)"/><span>{{ choice.label }}</span></label></fieldset>
+            <p class="tw-note">保存配置后任务回到已停止；点击“启动”后才开始查询实时库存。</p>
+          </template>
+          <template v-else-if="modal === 'recover'">
+            <p v-if="inventoryView?.runs[active.id]?.status === 'order_verifying'">请先在官方购票端核实本次订单。只有确认未创建订单后，才能恢复监控。</p>
+            <p v-else>请确认未支付订单、购票资格或观演人问题已处理。确认后客户端将重新查询库存。</p>
+            <p v-if="inventoryView?.runs[active.id]?.message" class="tw-alert">{{ inventoryView.runs[active.id].message }}</p>
+          </template>
           <ScanAuthorization v-else-if="modal === 'auth'" :task-id="active.id" :client-number="state.clientNumber" :protocol="attempt?.protocol || state.authProtocol" :image="safeImage" :status="attempt?.status || ''" :message="saveError || attempt?.message || ''" :remaining="remaining" :busy="saving" :logged-in="active.protocolStatus === 'alive'" @refresh="beginAuth"/>
           <template v-else-if="modal === 'reauth'"><p>任务 {{ state.clientNumber }}-{{ active.id }} 已登录协议账号{{ active.wechatNickname ? `「${active.wechatNickname}」` : '' }}，确认重新扫码授权吗？</p><p class="tw-note">新授权成功后才会替换绑定；取消、过期或失败时保留原绑定，原账号是否可用单独检查。</p></template>
           <template v-else-if="modal === 'delete'"><p class="tw-delete-note">确认删除 {{ active.id }}？此任务的配置和本地授权信息将被清除，删除不可恢复，编号不再使用。协议支持时尝试退出账号。</p></template>
         </div>
-        <div class="tw-dialog-footer"><span role="status" aria-live="polite">{{ saving || crossSaving ? '正在保存…' : saveError ? '操作失败，请查看提示' : modal === 'seat' ? '修改自动保存' : '' }}</span><div><template v-if="modal === 'note' || modal === 'address'"><button v-if="modal === 'address' && active.shippingAddress" :disabled="saving" @click="saveDetails(true)">清除地址</button><button :disabled="saving" @click="close()">取消</button><button type="submit" form="task-details-form" class="tw-primary" :disabled="saving || (modal === 'note' && noteLength > 500)">{{ saving ? '正在保存…' : '保存' }}</button></template><template v-else-if="modal === 'delete'"><button :disabled="saving" @click="close()">取消</button><button class="tw-danger" :disabled="saving" @click="deleteTask">确认删除</button></template><template v-else-if="modal === 'reauth'"><button :disabled="saving" @click="close()">取消</button><button class="tw-primary" :disabled="saving" @click="confirmReauthorization">确认重新授权</button></template><button v-else class="tw-primary" :disabled="saving || crossSaving || (modal === 'seat' && !!saveError)" @click="close()">{{ modal === 'seat' ? '完成' : '关闭' }}</button></div></div>
+        <div class="tw-dialog-footer"><span role="status" aria-live="polite">{{ saving || crossSaving ? '正在保存…' : saveError ? '操作失败，请查看提示' : modal === 'seat' ? '修改自动保存' : '' }}</span><div><template v-if="modal === 'note' || modal === 'address'"><button v-if="modal === 'address' && active.shippingAddress" :disabled="saving" @click="saveDetails(true)">清除地址</button><button :disabled="saving" @click="close()">取消</button><button type="submit" form="task-details-form" class="tw-primary" :disabled="saving || (modal === 'note' && noteLength > 500)">{{ saving ? '正在保存…' : '保存' }}</button></template><template v-else-if="modal === 'delete'"><button :disabled="saving" @click="close()">取消</button><button class="tw-danger" :disabled="saving" @click="deleteTask">确认删除</button></template><template v-else-if="modal === 'recover'"><button :disabled="saving" @click="close()">取消</button><button class="tw-primary" :disabled="saving" @click="recoverRun">{{ inventoryView?.runs[active.id]?.status === 'order_verifying' ? '确认未创建，恢复监控' : '已处理，恢复监控' }}</button></template><template v-else-if="modal === 'repurchase'"><button :disabled="saving" @click="close()">取消</button><button class="tw-primary" :disabled="saving || !repurchasePeople.length || !repurchaseSeats.length" @click="saveRepurchase">保存配置</button></template><template v-else-if="modal === 'reauth'"><button :disabled="saving" @click="close()">取消</button><button class="tw-primary" :disabled="saving" @click="confirmReauthorization">确认重新授权</button></template><button v-else class="tw-primary" :disabled="saving || crossSaving || (modal === 'seat' && !!saveError)" @click="close()">{{ modal === 'seat' ? '完成' : '关闭' }}</button></div></div>
       </template>
     </dialog>
     <dialog ref="controlDialog" class="tw-dialog" aria-labelledby="service-confirm" @keydown="confirmDialog($event, controlService)" @cancel.prevent="!protocolBusy && controlDialog?.close()">
@@ -433,12 +498,20 @@ async function deleteTask() {
           <p>受影响任务：{{ protocol?.affected.length ? protocol.affected.join('、') : '暂无已绑定任务' }}。正在等待的扫码也会取消。执行后将取消相关请求并暂停任务，账号凭据保留。</p><p v-if="controlAction === 'restart'">服务恢复后重新检查账号，任务保持暂停。</p><p v-if="protocolError" class="tw-alert" role="alert">{{ protocolError }}</p></div>
       <div class="tw-dialog-footer"><span>{{ protocolBusy ? '处理中…' : '' }}</span><div><button :disabled="!!bulkAction || protocolBusy" @click="controlDialog?.close()">取消</button><button class="tw-primary" :disabled="!!bulkAction || protocolBusy" @click="controlService">确认{{ controlAction === 'stop' ? '关闭' : '重启' }}</button></div></div>
     </dialog>
+    <dialog ref="ordersDialog" class="tw-dialog wide" aria-labelledby="orders-title" @cancel.prevent="ordersDialog?.close()">
+      <div class="tw-dialog-head"><div><h2 id="orders-title">订单记录</h2><p>本地长期保存 · {{ historyOrders.length }} 条</p></div><button class="tw-close" aria-label="关闭弹窗" @click="ordersDialog?.close()">×</button></div>
+      <div class="tw-dialog-content tw-order-history"><p v-if="ordersError" class="tw-alert" role="alert">{{ ordersError }}</p><p v-if="!historyOrders.length && !ordersBusy" class="tw-note">暂无订单记录。</p>
+        <article v-for="record in historyOrders" :key="`${record.taskId}-${record.id}`" class="tw-order-record"><div><strong>订单 {{ record.id }}</strong><span class="tw-muted">任务 {{ record.taskId }} · {{ record.match.name }} · {{ fullTime(record.createdAt) }}</span></div><div>{{ record.viewers.map(v => v.name).join('、') }} · {{ record.plan.parts.map(p => `${p.region.name}区 ${p.quantity}张`).join(' + ') }}</div><button :disabled="ordersBusy" class="tw-operation-delete" @click="deleteOrder(record)">删除记录</button></article>
+      </div>
+      <div class="tw-dialog-footer"><span>删除仅清理本地记录，不影响官方订单</span><div><button @click="ordersDialog?.close()">关闭</button></div></div>
+    </dialog>
   </main>
 </template>
 
 <style scoped>
 .tw-value.tw-people-ready{display:flex;align-items:center;gap:5px}.tw-people-ready>span{min-width:0;overflow:hidden;text-overflow:ellipsis}.tw-business-ready-icon{width:14px;height:14px;flex-shrink:0;color:var(--active)}
 .tw-people-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.tw-person{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.tw-person-choice{display:flex;align-items:center;gap:12px;flex:1;min-width:0}.tw-person-details{flex-shrink:0}.tw-person small{overflow-wrap:anywhere}.tw-person{flex-wrap:wrap}.tw-person span{display:flex;flex-direction:column;gap:4px}.tw-person small{color:var(--muted)}
+.tw-order-history{max-height:65vh;overflow:auto}.tw-order-record{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 16px;padding:12px 0;border-bottom:1px solid var(--line);align-items:center}.tw-order-record>div{min-width:0;overflow-wrap:anywhere}.tw-order-record>div:first-child{display:flex;flex-direction:column}.tw-order-record .tw-muted,.tw-order-viewers{font-size:12px;color:var(--muted)}.tw-order-viewers{display:flex;gap:12px;flex-wrap:wrap}.tw-order-record button{grid-column:2;grid-row:1/4;color:var(--app-error);font-size:12px}
 .tw-task-controls{position:sticky;top:0;z-index:10;margin:0 -22px 18px;padding:12px 22px;background:var(--bg);border-bottom:1px solid var(--line);box-shadow:0 6px 12px var(--app-shadow)}
 .tw-task-controls .tw-heading{margin-bottom:10px;flex-wrap:wrap}
 .tw-task-controls .tw-toolbar{margin-bottom:0}

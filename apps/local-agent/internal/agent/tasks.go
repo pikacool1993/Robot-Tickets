@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"robot/apps/local-agent/internal/tasks"
 	"time"
 )
@@ -75,7 +76,8 @@ func (s *Service) TaskView() (tasks.View, error) {
 					view.Tasks[i].BusinessMessage = "等待业务登录"
 				}
 				run := s.businessRuns[view.Tasks[i].ID]
-				if b.Status != "alive" || b.Paused || b.Protocol != s.state.AuthProtocol || run == nil || !sameBinding(run.binding, b) {
+				grace := run != nil && !run.offlineSince.IsZero() && time.Since(run.offlineSince) < 18*time.Hour && run.session.Token != ""
+				if (b.Status != "alive" && !grace) || b.Paused || b.Protocol != s.state.AuthProtocol || run == nil || !sameBinding(run.binding, b) {
 					view.Tasks[i].PeopleUsable = false
 				}
 				if b.Protocol == "yyb" && b.Account.Ref != "" {
@@ -120,6 +122,9 @@ func (s *Service) DeleteTask(id int64) error {
 	if err := s.requireInventoryStoppedLocked(id); err != nil {
 		return err
 	}
+	if s.inventory.pending[id] != nil {
+		return errors.New("此任务存在订单待核实或未完成提交，处理完成后才能删除")
+	}
 	if s.protocols != nil {
 		ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 		defer cancel()
@@ -131,7 +136,16 @@ func (s *Service) DeleteTask(id int64) error {
 		}
 	}
 	s.stopTaskBusinessLocked(id)
-	return s.tasks.Delete(id)
+	if err := s.tasks.Delete(id); err != nil {
+		return err
+	}
+	for _, prefix := range []string{"business-session.v1.", "protocol-offline.v1.", "order-state.v1."} {
+		_ = s.store.Delete(fmt.Sprintf("%s%d", prefix, id))
+	}
+	delete(s.inventory.manual, id)
+	delete(s.inventory.runs, id)
+	delete(s.maintenanceResume, id)
+	return nil
 }
 
 func (s *Service) SaveTaskNote(id int64, note string) error {

@@ -127,7 +127,7 @@ func TestDirectTransportAndTokenFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(401); io.WriteString(w, `{"code":9}`) }))
 	defer srv.Close()
 	c.base = srv.URL
-	_, err := c.People(t.Context(), config(), Session{"private", "1"})
+	_, err := c.People(t.Context(), config(), Session{Token: "private", UserID: "1"})
 	if !IsTokenExpired(err) {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestFlowLoginAndReplayBound(t *testing.T) {
 			c := NewClient()
 			defer c.Close()
 			c.base = srv.URL
-			session := Session{"cached-token", "123"}
+			session := Session{Token: "cached-token", UserID: "123"}
 			if mode == "first" {
 				session = Session{}
 			}

@@ -4,8 +4,27 @@ import (
 	"context"
 	"errors"
 	"robot/apps/local-agent/internal/protocols"
+	"robot/apps/local-agent/internal/userkey"
 	"time"
 )
+
+type protocolRuntime interface {
+	Bindings() map[int64]protocols.Binding
+	MiniProgramCode(context.Context, int64, protocols.Binding, string) (string, error)
+	UserEncryptionKey(context.Context, int64, protocols.Binding, string) (userkey.Material, error)
+	ResumeTask(int64) error
+	Attempt(int64) protocols.Attempt
+	Begin(int64, string) (protocols.Attempt, error)
+	Control(context.Context, string, string, bool) error
+	Proxy(string) (string, error)
+	Status(string) protocols.Status
+	Activate(string)
+	Deactivate()
+	Ensure(context.Context, string, string, bool) error
+	Close()
+	AvatarURL(string, protocols.Account) string
+	DeleteTask(context.Context, int64) error
+}
 
 // The desktop composition root installs the real runtime; unit tests may inject no runtime.
 func (s *Service) EnableProtocols() error {
@@ -57,13 +76,14 @@ func (s *Service) ControlProtocol(action string, confirmed bool) error {
 	return s.protocols.Control(ctx, s.state.AuthProtocol, action, confirmed)
 }
 func (s *Service) BeginAuthorization(id int64) (protocols.Attempt, error) {
+	_, err := s.pauseForMaintenance(id)
+	if err != nil {
+		return protocols.Attempt{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e := s.requireTaskSession(); e != nil {
 		return protocols.Attempt{}, e
-	}
-	if err := s.requireInventoryStoppedLocked(id); err != nil {
-		return protocols.Attempt{}, err
 	}
 	if s.protocols == nil {
 		return protocols.Attempt{}, errors.New("协议服务未初始化")
@@ -84,5 +104,11 @@ func (s *Service) Authorization(id int64) (protocols.Attempt, error) {
 	if s.protocols == nil {
 		return protocols.Attempt{}, errors.New("协议服务未初始化")
 	}
-	return s.protocols.Attempt(id), nil
+	attempt := s.protocols.Attempt(id)
+	if attempt.Status == "failed" || attempt.Status == "expired" || attempt.Status == "timeout" || attempt.Status == "cancelled" {
+		if r := s.inventory.runs[id]; r != nil && r.status == "maintenance" {
+			r.status, r.message = "maintenance_failed", "授权未完成，请重试授权或点击停止"
+		}
+	}
+	return attempt, nil
 }

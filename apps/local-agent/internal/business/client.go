@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"robot/apps/local-agent/internal/netdebug"
 	"strconv"
 	"strings"
 	"time"
@@ -61,7 +62,10 @@ func NewDeviceID() (string, error) {
 func formatDeviceID(ms, n int64) string { return strconv.FormatInt(ms, 10) + strconv.FormatInt(n, 10) }
 
 type Person struct {
+	Disabled  bool   `json:"disabled,omitempty"`
+	Disabled2 bool   `json:"disabled2,omitempty"`
 	ID        string `json:"id"`
+	UID       string `json:"uid,omitempty"`
 	Name      string `json:"realname"`
 	Card      string `json:"real_card_id"`
 	Phone     string `json:"phone"`
@@ -72,10 +76,13 @@ type Person struct {
 	Signature string `json:"signature"`
 }
 
+func (p Person) Available() bool { return !p.Disabled && !p.Disabled2 }
+
 func (p *Person) UnmarshalJSON(raw []byte) error {
 	type alias Person
 	var v struct {
-		ID json.RawMessage `json:"id"`
+		ID  json.RawMessage `json:"id"`
+		UID json.RawMessage `json:"uid"`
 		*alias
 	}
 	v.alias = (*alias)(p)
@@ -84,6 +91,10 @@ func (p *Person) UnmarshalJSON(raw []byte) error {
 	}
 	id, err := scalarID(v.ID)
 	p.ID = id
+	p.UID = ""
+	if err == nil && len(v.UID) > 0 && string(v.UID) != "null" {
+		p.UID, err = scalarID(v.UID)
+	}
 	return err
 }
 func scalarID(raw []byte) (string, error) {
@@ -100,7 +111,10 @@ func scalarID(raw []byte) (string, error) {
 	return "", errors.New("业务响应缺少有效 ID")
 }
 
-type Session struct{ Token, UserID string }
+type Session struct {
+	Token, UserID string
+	AuthCode      string `json:"-"`
+}
 type APIError struct{ HTTP, Code int }
 
 func (e *APIError) Error() string {
@@ -115,13 +129,14 @@ func IsCodeExpired(err error) bool {
 }
 
 type Client struct {
-	http  *http.Client
-	base  string
-	delay time.Duration
+	http      *http.Client
+	base      string
+	orderBase string
+	delay     time.Duration
 }
 
 func NewClient() *Client {
-	return &Client{http: &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, base: N1, delay: 5 * time.Second}
+	return &Client{http: &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, base: N1, orderBase: N5, delay: 5 * time.Second}
 }
 func (c *Client) Close() { c.http.CloseIdleConnections() }
 func Retry(ctx context.Context, delay time.Duration, action func() error) error {
@@ -159,12 +174,15 @@ func (c *Client) call(ctx context.Context, cfg Config, path, token string, body 
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
+		started := time.Now()
 		res, err := c.http.Do(req)
 		if err != nil {
+			netdebug.Response(ctx, "N1", "POST", path, 0, nil, started, err)
 			return err
 		}
 		defer res.Body.Close()
 		raw, err := io.ReadAll(io.LimitReader(res.Body, 2<<20+1))
+		netdebug.Response(ctx, "N1", "POST", path, res.StatusCode, raw, started, err)
 		if err != nil {
 			return err
 		}
@@ -184,7 +202,7 @@ func (c *Client) call(ctx context.Context, cfg Config, path, token string, body 
 		if path == "/fc/wx_api/v1/Login/index" {
 			expected = 200
 		}
-		if result.Code != expected && !(strings.HasPrefix(path, "/fc/wx_api/v1/MatchCon/getBillRegion?") && result.Code == 200) {
+		if result.Code != expected {
 			return &APIError{HTTP: res.StatusCode, Code: result.Code}
 		}
 		if json.Unmarshal(raw, out) != nil {
@@ -222,7 +240,7 @@ func (c *Client) Login(ctx context.Context, cfg Config, deviceID, code string) (
 	if err != nil || out.Token == "" {
 		return Session{}, errors.New("业务登录响应缺少 Token 或用户 ID")
 	}
-	return Session{out.Token, id}, nil
+	return Session{Token: out.Token, UserID: id, AuthCode: code}, nil
 }
 func (c *Client) People(ctx context.Context, cfg Config, s Session) ([]Person, error) {
 	var out struct {

@@ -7,6 +7,12 @@ import (
 
 // Refresh authenticates only when necessary, and replays the read request once on HTTP 401.
 func (c *Client) Refresh(ctx context.Context, cfg Config, deviceID string, session Session, getCode func(context.Context) (string, error), log func(string, string)) (Session, []Person, error) {
+	return c.RefreshWithLogin(ctx, cfg, deviceID, session, getCode, log, nil)
+}
+
+// RefreshWithLogin lets ephemeral key prefetch begin immediately after authentication,
+// independently of the subsequent spectator request.
+func (c *Client) RefreshWithLogin(ctx context.Context, cfg Config, deviceID string, session Session, getCode func(context.Context) (string, error), log func(string, string), onLogin func(Session)) (Session, []Person, error) {
 	if err := cfg.Validate(); err != nil {
 		return Session{}, nil, err
 	}
@@ -22,6 +28,9 @@ func (c *Client) Refresh(ctx context.Context, cfg Config, deviceID string, sessi
 			session, err = c.Login(ctx, cfg, deviceID, code)
 			code = ""
 			if err == nil {
+				if onLogin != nil {
+					onLogin(session)
+				}
 				log("success", "业务登录成功")
 				return nil
 			}

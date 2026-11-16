@@ -1,0 +1,69 @@
+Request
+POST https://fccdn5.k4n.cc/fc/wx_api/v1/MatchCon/createMatchOrder?lid2=1374082&s_time=1772777181&s_sign=e817df100a69712082cafb7a879ccac3 HTTP/1.1
+Host: fccdn5.k4n.cc
+Connection: keep-alive
+Content-Length: 1447
+content-type: application/json;charset:utf-8;
+Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjEzNzQwODIsIm9pZCI6IjRmYmEzYTIyMzk5ODEzMmJjZmU5YWE0MTM5MWQyNTgzIiwibGlkIjowLCJzaWRlIjoid3hfYXBpIiwiYXVkIjoiIiwiZXhwIjoxNzcyODQ5MTQ4LCJpYXQiOjE3NzI3NzcxNDgsImlzcyI6IiIsImp0aSI6IjM0M2ZhZmEyM2ExZmE0MWJjZmZjMWUzZTEwNzgzMmJhIiwibmJmIjoxNzcyNzc3MTQ4LCJzdWIiOiIifQ.3ud0K6ppD50xKbP4ZnaYNxTXaSmgQzNOk_EKDShU9FE
+charset: utf-8
+Referer: https://servicewechat.com/wxffa42ecd6c0e693d/78/page-frame.html
+User-Agent: Mozilla/5.0 (Linux; Android 10; ONEPLUS A6000 Build/QKQ1.190716.003; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/142.0.7444.173 Mobile Safari/537.36 XWEB/1420229 MMWEBSDK/20260101 MMWEBID/4815 MicroMessenger/8.0.69.3040(0x2800453F) WeChat/arm64 Weixin NetType/WIFI Language/zh_CN ABI/arm64 MiniProgramEnv/android
+Accept-Encoding: gzip, deflate, br
+
+{
+    "encryptedData": "2569b25e11c8d0ec0941e2a562a3f9cd40385c2130d63fca03473bf8949654ed180a22c485eedf59eff274a746b873d67779f5ed61835bcfb9befdf21d54d7e385ec4444496ce401274201407f01d8a21dbad01eb67075942075c88eab00b912e0b7c1994d931869642dee117dbb039907ece554dc43a1e83327e7eea7fa9962c286a20722732c94da74ce32f81f0edbf13e36272d8f595fa15e571ac1b6016d59d2b597f680e79c1d8a980542e7ee4f3527bd14d902f05a0371a544c92ff804eb445a6531d78d4789abce9f31d66d5f146281c4d343283cfb59408f91ed5e44ff387e05fda09819d82a822606d1d3df6f84df0be28248192ae2856fe0e1ccf7bcaf76df3f01b934ab79db894499c0abe7af23f86d211e7f2581af7707c5e4cf24e3a084fd7c35b4bdd0cfd86ba6bd66c6f0a670d43e545829c403744c728200c6466f3aeb287f7cf65e9fd8d18dc50ed02a12b90bde4eea2c025d68b61403b5968acab07403b6d9fcf76d1c5b8fcd6dc00304537f07e6d1748abbe9fccc0077e176dc3471f6f5eba58c87cbb5e1b1eb8868c4b31582ae2360adaad4ff2810eb34c4e2cec3d5c035e9354ad5418f94ba0e00a77bc2f6208320df8112719ea67fceb01958d97e1fa7a33c2674de11a800",
+    "version": 193,
+    "expireTime": 1772780781250,
+    "agree": true,
+    "id": "72",
+    "regions": [
+        {
+            "region": 6,
+            "estate": 7,
+            "num": 1,
+            "name": "507",
+            "price": "100.00",
+            "usable_count": 519
+        }
+    ],
+    "users": [
+        {
+            "id": 1374082,
+            "uid": 1374082,
+            "realname": "朱传彦",
+            "real_card_id": "510***********032X",
+            "phone": "159****0843",
+            "is_self": true,
+            "real_card_id2": "51062219720626032X",
+            "phone2": "15982320843",
+            "timestamp": 1772777179,
+            "signature": "ad9f85c5f0d56f3b6fcce5efd39780d2",
+            "disabled": false,
+            "disabled2": false,
+            "showText": "朱传彦 510***********032X"
+        }
+    ]
+}
+
+--------------------------------------------------------
+
+Response
+HTTP/1.1 200
+Date: Fri, 06 Mar 2026 06:06:22 GMT
+Content-Type: application/json; charset=utf-8
+Connection: keep-alive
+Vary: Accept-Encoding
+Vary: Accept-Encoding
+Content-Encoding: gzip
+X-Via-JSL: b8801a4,-
+Set-Cookie: __jsluid_s=e8dd92520c6d58ecc20c954768666796; max-age=31536000; path=/; HttpOnly; SameSite=None; secure
+X-Cache: bypass
+Content-Length: 111
+
+{
+    "code": 0,
+    "msg": "2026怡宝中超联赛第1轮此门票不在销售时间内",
+    "data": [
+
+    ]
+}

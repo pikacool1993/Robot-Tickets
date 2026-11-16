@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"robot/apps/local-agent/internal/netdebug"
 	"strings"
 	"time"
 )
@@ -82,13 +83,20 @@ func (a *adapter) call(ctx context.Context, method, path string, body any, out a
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.token)
+	started := time.Now()
 	res, err := a.client.Do(req)
 	if err != nil {
+		netdebug.Response(ctx, a.kind, method, path, 0, nil, started, err)
 		return &networkError{}
 	}
 	defer res.Body.Close()
+	raw, readErr := io.ReadAll(io.LimitReader(res.Body, (8<<20)+1))
+	netdebug.Response(ctx, a.kind, method, path, res.StatusCode, raw, started, readErr)
+	if readErr != nil || len(raw) > 8<<20 {
+		return errors.New("协议响应读取失败或过大")
+	}
 	var e envelope
-	if json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(&e) != nil {
+	if json.Unmarshal(raw, &e) != nil {
 		return errors.New("协议响应无法解析")
 	}
 	success := e.Code == 0

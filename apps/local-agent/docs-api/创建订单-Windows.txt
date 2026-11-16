@@ -1,0 +1,78 @@
+Request
+POST https://fccdn5.k4n.cc/fc/wx_api/v1/MatchCon/createMatchOrder?lid2=1402668&s_time=1755243474&s_sign=dd64f88e3e4c3993e322f5a5a08d8442 HTTP/1.1
+Host: fccdn5.k4n.cc
+Connection: keep-alive
+Content-Length: 1441
+xweb_xhr: 1
+Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjE0MDI2NjgsIm9pZCI6IjMwNTA0YzE0YTZmMDhiMjRhNTM5ZmI0ZTBjOGE5OTEyIiwibGlkIjowLCJzaWRlIjoid3hfYXBpIiwiYXVkIjoiIiwiZXhwIjoxNzU1MzE1NDQ4LCJpYXQiOjE3NTUyNDM0NDgsImlzcyI6IiIsImp0aSI6IjE3MGZiMmNjMDhmN2FkNDdmZjgyMjgwODg0ZGRkNzcwIiwibmJmIjoxNzU1MjQzNDQ4LCJzdWIiOiIifQ.XvRsBn7ZGzGOLCHm-05GNh9Qw6jNlWchLdLMXzZjVcc
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090c37)XWEB/14315
+Content-Type: application/json;charset:utf-8;
+Accept: */*
+Sec-Fetch-Site: cross-site
+Sec-Fetch-Mode: cors
+Sec-Fetch-Dest: empty
+Referer: https://servicewechat.com/wxffa42ecd6c0e693d/77/page-frame.html
+Accept-Encoding: gzip, deflate, br
+Accept-Language: zh-CN,zh;q=0.9
+
+{
+    "encryptedData": "604392ca7c2b598bc7102ba38cce80a6fe4f7d32415c344341751ab493293c767175a47db7b26cfda10dfd4069fe89479be440ac13eefbc224d23e35ef1d3486d2e27ef7f13a85b08630ae88365128657422df47144db95f7982c8d9044e987dff719f28a37b27cc8826a6306991bede54b1eaf4ef0c9392fa76eeee05ccc202a8a9acfcc08b865e4678e3c71f03a9afafdfc245ffd5bc0c90bafa52884f29c0369bf099018fb16caa05d2270eabde4686c3937b86702da19be89a7bbf375582ade0f3442279e4e35f0f3657c6c14cfb58d7a4afc89d629bcc5a7e38e18e4357b9752c49600df48f1c321162df82989104ff5192a95840c3baf9f052864babc783b5b5228a81f0b2c8777c7cebd430e40a477a2b50ca96f02dbaf089aee958a40a8c8bafbc7dfb75760928741349421b5da38e4e9573f096c52287879f798977b43b9a24fcc543ebd90f30ca92f773a5dc9374c34e6934c764131c62158ee5ab2f0c2c13faddfedba610124ca654e0f84e04c9c51b2c233ba6329b6995af684b1625f82c4f3e2632b18500a07fe48d9a8764821dc2f6f780522838934d24be8caec768a5865f3aa749cc2438f026d5e051f322a5a7f08a036bb15370e37bde58519f74f5871dc2ba05285bac60e43fcb",
+    "version": 54,
+    "expireTime": 1755247074005,
+    "agree": true,
+    "id": "58",
+    "regions": [
+        {
+            "region": 3,
+            "estate": 1,
+            "num": 1,
+            "name": "VIP1",
+            "price": "1288.00",
+            "usable_count": 3
+        }
+    ],
+    "users": [
+        {
+            "id": 1136726,
+            "uid": 1402668,
+            "realname": "王磊",
+            "real_card_id": "510***********3614",
+            "phone": "158****3664",
+            "is_self": false,
+            "real_card_id2": "510625199310123614",
+            "phone2": "15882103664",
+            "timestamp": 1755243462,
+            "signature": "1b8016ebc9b25a984b812af1ddcc7a82",
+            "disabled": false,
+            "disabled2": false,
+            "showText": "王磊 510***********3614"
+        }
+    ]
+}
+--------------------------------------------------------
+
+Response
+HTTP/1.1 200
+Date: Fri, 15 Aug 2025 07:37:54 GMT
+Content-Type: application/json; charset=utf-8
+Connection: keep-alive
+Vary: Accept-Encoding
+Vary: Accept-Encoding
+Content-Encoding: gzip
+X-Via-JSL: c84a5e4,-
+Set-Cookie: __jsluid_s=9741d39d8cd925b18abdc6c5edc4d962; max-age=31536000; path=/; HttpOnly; SameSite=None; secure
+X-Cache: bypass
+Content-Length: 71
+
+{
+    "code": 1,
+    "msg": "订单创建成功",
+    "data": 34726
+}
+
+{
+    "code": 5,
+    "msg": "抢座失败，请稍后再试！",
+    "data": [],
+    "timeout": 5
+}

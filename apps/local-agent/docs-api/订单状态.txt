@@ -1,0 +1,35 @@
+Request
+POST https://fccdn1.k4n.cc/fc/wx_api/v1/MatchOrder/getMatchOrderInfo?lid2=1626783 HTTP/1.1
+Host: fccdn1.k4n.cc
+Connection: keep-alive
+Content-Length: 12
+Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjE2MjY3ODMsIm9pZCI6ImExNmNlMzljYTE1N2U2NDhkZGYzZjdjYzFkMzEwZDMxIiwibGlkIjowLCJzaWRlIjoid3hfYXBpIiwiYXVkIjoiIiwiZXhwIjoxNzgxODM0ODcyLCJpYXQiOjE3ODE3NjI4NzIsImlzcyI6IiIsImp0aSI6IjJlOGZiYjZmNDJjZmI2NTBjNWMxMWNjN2I3MzZiNjViIiwibmJmIjoxNzgxNzYyODcyLCJzdWIiOiIifQ.y3BZ0Wt0Rt_Z4xOCSULqwakNklw-lL34_ZaCmQOYQZk
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) UnifiedPCWindowsWechat(0xf2541a35) XWEB/19977
+xweb_xhr: 1
+Content-Type: application/json;charset:utf-8;
+Accept: */*
+Sec-Fetch-Site: cross-site
+Sec-Fetch-Mode: cors
+Sec-Fetch-Dest: empty
+Referer: https://servicewechat.com/wxffa42ecd6c0e693d/78/page-frame.html
+Accept-Encoding: gzip, deflate, br
+Accept-Language: zh-CN,zh;q=0.9
+
+
+{"id":"262"}
+--------------------------------------------------------
+
+Response
+HTTP/1.1 200
+Date: Thu, 18 Jun 2026 06:09:37 GMT
+Content-Type: application/json; charset=utf-8
+Connection: keep-alive
+Vary: Accept-Encoding
+Vary: Accept-Encoding
+Content-Encoding: gzip
+X-Via-JSL: b92ecb0,-
+Set-Cookie: __jsluid_s=e0c5713a33c87d34e3d45b86e1f1aa9b; max-age=31536000; path=/; HttpOnly; SameSite=None; secure
+X-Cache: bypass
+Content-Length: 968
+
+{"code":1,"msg":"获取成功","data":{"id":262,"create_time":"2026-06-18 14:08:46","payable":"18.00","payed":"0.00","count_bill":1,"status":5,"order_id":"8506181408465729234460535","refund":"0.00","pay_type":null,"match_id":85,"pay_time":null,"order_end_time":"2026-06-18 14:23:46","useShare":false,"info":[{"id":265,"bill_ids":[19207]}],"match":{"id":85,"team1_name":"成都蓉城希拉谷","team1_logo":"https:\/\/fcscdn3.k4n.cc\/upload\/a30\/png\/2024229\/1.png","team1_color":"rgba(242, 13, 13, 1)","team2_name":"温州俱乐部德赛","team2_logo":"https:\/\/fcscdn3.k4n.cc\/upload\/a11\/png\/2026617\/温州俱乐部德赛.png","team2_color":"rgba(215, 194, 147, 1)","time_s":1781956800,"address_name":"双流体育中心体育场","title":"2026怡宝中乙联赛第12轮","address":"四川省成都市双流区银河路五段20号","address_lat":30.5701618,"address_lng":103.8956375,"max_num":2,"imgs":{"1":"https:\/\/fcscdn3.k4n.cc\/upload\/a11\/jpeg\/2026617\/12轮对阵图.jpg","2":"","3":"","4":""},"refund_e_time":1781931600,"refund":true,"refund_ratio":90,"bgimg":"","select_type":2,"in_s_time":1781937000,"share_img":null,"s_date":"2026年06月20日 星期六 14:30"},"isAdminOrder":false,"bill":[{"id":19207,"no":"8520202124","price":"18.00","status":6,"region":2,"estate":2,"row":2,"seat":124,"order_id":262,"order_info_id":265,"realname":"黄孟毓","phone":"137****7605","real_card_id":"510****0924","estate_name":"南区双号","name":"南区","estateName":"南区双号","setmyuse":false,"usshare":false,"refundBtn":true,"is_my":false,"setNoUse":false,"useSetUser":false,"bindBtn":false,"show_parents_child_btn":false}],"tuiBill":[]},"time":1781762977}

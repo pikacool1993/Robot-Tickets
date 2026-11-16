@@ -2,20 +2,60 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"robot/apps/local-agent/internal/business"
 	"robot/apps/local-agent/internal/protocols"
+	"robot/apps/local-agent/internal/userkey"
 	"time"
 )
 
+type businessAPI interface {
+	orderSender
+	Close()
+	Stock(context.Context, business.Config, business.Session, string) ([]byte, error)
+	RefreshWithLogin(context.Context, business.Config, string, business.Session, func(context.Context) (string, error), func(string, string), func(business.Session)) (business.Session, []business.Person, error)
+}
+
 type businessRun struct {
-	binding   protocols.Binding
-	ctx       context.Context
-	cancel    context.CancelFunc
-	busy      bool
-	session   business.Session
-	attempted bool
+	binding      protocols.Binding
+	ctx          context.Context
+	cancel       context.CancelFunc
+	busy         bool
+	session      business.Session
+	attempted    bool
+	keys         *userkey.Cache
+	keyCancel    context.CancelFunc
+	keyEpoch     uint64
+	offlineSince time.Time
+	refreshReady bool
+}
+
+type persistedBusinessSession struct {
+	Binding  protocols.Binding `json:"binding"`
+	Token    string            `json:"token"`
+	UserID   string            `json:"userId"`
+	AuthCode string            `json:"authCode"`
+	Key      userkey.Snapshot  `json:"key"`
+	HasKey   bool              `json:"hasKey"`
+}
+
+func (s *Service) persistBusinessSessionLocked(id int64, r *businessRun) {
+	if s.store == nil || r == nil || r.session.Token == "" {
+		return
+	}
+	data := persistedBusinessSession{Binding: r.binding, Token: r.session.Token, UserID: r.session.UserID, AuthCode: r.session.AuthCode}
+	if r.keys != nil {
+		if key, ok := r.keys.Peek(); ok {
+			data.Key = key.Snapshot()
+			data.HasKey = true
+		}
+	}
+	raw, err := json.Marshal(data)
+	if err == nil {
+		_ = s.store.Put(fmt.Sprintf("business-session.v1.%d", id), raw)
+	}
 }
 
 func sameBinding(a, b protocols.Binding) bool {
@@ -23,8 +63,13 @@ func sameBinding(a, b protocols.Binding) bool {
 }
 func (s *Service) cancelBusinessLocked() {
 	for _, r := range s.businessRuns {
+		s.stopOrderKeysLocked(r)
+		if r.keys != nil {
+			r.keys.Clear()
+		}
 		r.cancel()
 	}
+	s.orderKeys = nil
 	s.businessRuns = map[int64]*businessRun{}
 }
 func (s *Service) businessLoop() {
@@ -53,12 +98,79 @@ func (s *Service) reconcileBusinessLocked() {
 		present[t.ID] = true
 		b, ok := bindings[t.ID]
 		r := s.businessRuns[t.ID]
-		if r != nil && (!ok || !sameBinding(r.binding, b) || b.Status == "expired" || b.Paused || b.Protocol != s.state.AuthProtocol) {
+		if r != nil && (!ok || !sameBinding(r.binding, b) || b.Paused || b.Protocol != s.state.AuthProtocol) {
+			s.stopOrderKeysLocked(r)
+			if r.keys != nil {
+				r.keys.Clear()
+			}
 			r.cancel()
 			delete(s.businessRuns, t.ID)
 			r = nil
 		}
 		if !ok || b.Protocol != s.state.AuthProtocol {
+			continue
+		}
+		var offlineRaw []byte
+		if r == nil {
+			offlineRaw, _ = s.store.Get(fmt.Sprintf("protocol-offline.v1.%d", t.ID))
+		}
+		if (b.Status == "expired" || len(offlineRaw) > 0) && r == nil {
+			var saved persistedBusinessSession
+			raw, _ := s.store.Get(fmt.Sprintf("business-session.v1.%d", t.ID))
+			if json.Unmarshal(raw, &saved) == nil && saved.Token != "" && saved.UserID != "" && sameBinding(saved.Binding, b) {
+				ctx, cancel := context.WithCancel(s.ctx)
+				r = &businessRun{binding: b, ctx: ctx, cancel: cancel, attempted: true, session: business.Session{Token: saved.Token, UserID: saved.UserID, AuthCode: saved.AuthCode}, keys: &userkey.Cache{}}
+				if saved.HasKey {
+					r.keys.Set(userkey.Restore(saved.Key))
+				}
+				if offlineRaw, _ := s.store.Get(fmt.Sprintf("protocol-offline.v1.%d", t.ID)); len(offlineRaw) > 0 {
+					r.offlineSince, _ = time.Parse(time.RFC3339Nano, string(offlineRaw))
+				}
+				if r.offlineSince.IsZero() {
+					r.offlineSince = time.Now()
+					_ = s.store.Put(fmt.Sprintf("protocol-offline.v1.%d", t.ID), []byte(r.offlineSince.UTC().Format(time.RFC3339Nano)))
+				}
+				s.businessRuns[t.ID] = r
+				if data, e := s.tasks.Business(t.ID); e == nil && len(data.People) > 0 {
+					data.Usable = true
+					data.Status = "ready"
+					data.Message = "协议授权失效，暂用已记录登录参数"
+					_ = s.tasks.SaveBusiness(t.ID, data)
+				}
+			}
+		}
+		if r != nil && !r.offlineSince.IsZero() && time.Since(r.offlineSince) >= 18*time.Hour {
+			message := "协议离线或授权失效已满18小时，请重新授权登录"
+			if run := s.inventory.runs[t.ID]; run != nil && s.inventoryActiveLocked(t.ID) && run.status != "maintenance" && run.status != "maintenance_failed" {
+				s.stopInventoryLocked(t.ID, "stopped", message)
+			}
+			if !r.busy && !r.refreshReady {
+				if data, e := s.tasks.Business(t.ID); e == nil && (data.Status != "blocked" || data.Message != message) {
+					data.Status, data.Message, data.Usable = "blocked", message, false
+					_ = s.tasks.SaveBusiness(t.ID, data)
+				}
+			}
+			if b.Status != "alive" {
+				continue
+			}
+		}
+		if b.Status == "expired" && r != nil {
+			if r.offlineSince.IsZero() {
+				r.offlineSince = time.Now()
+				_ = s.store.Put(fmt.Sprintf("protocol-offline.v1.%d", t.ID), []byte(r.offlineSince.UTC().Format(time.RFC3339Nano)))
+				_ = s.tasks.AppendLog(t.ID, "warning", "协议授权失效，18小时宽限计时开始；在宽限期内继续使用已记录参数")
+			}
+			if time.Since(r.offlineSince) >= 18*time.Hour {
+				continue
+			}
+			if r.session.Token != "" {
+				if data, e := s.tasks.Business(t.ID); e == nil && (!data.Usable || data.Status != "ready") {
+					data.Usable = true
+					data.Status = "ready"
+					data.Message = "协议已失效，暂用已记录登录参数"
+					_ = s.tasks.SaveBusiness(t.ID, data)
+				}
+			}
 			continue
 		}
 		data, err := s.tasks.Business(t.ID)
@@ -70,7 +182,6 @@ func (s *Service) reconcileBusinessLocked() {
 		if changed {
 			data.Account = account
 			data.People = nil
-			data.Selected = nil
 			data.Usable = false
 			data.Status = "waiting"
 			data.Message = "等待业务登录"
@@ -109,6 +220,9 @@ func (s *Service) reconcileBusinessLocked() {
 		if r == nil {
 			ctx, cancel := context.WithCancel(s.ctx)
 			r = &businessRun{binding: b, ctx: ctx, cancel: cancel}
+			if offlineRaw, _ := s.store.Get(fmt.Sprintf("protocol-offline.v1.%d", t.ID)); len(offlineRaw) > 0 {
+				r.offlineSince, _ = time.Parse(time.RFC3339Nano, string(offlineRaw))
+			}
 			s.businessRuns[t.ID] = r
 		}
 		if !r.attempted && !r.busy {
@@ -117,6 +231,10 @@ func (s *Service) reconcileBusinessLocked() {
 	}
 	for id, r := range s.businessRuns {
 		if !present[id] {
+			s.stopOrderKeysLocked(r)
+			if r.keys != nil {
+				r.keys.Clear()
+			}
 			r.cancel()
 			delete(s.businessRuns, id)
 		}
@@ -145,6 +263,7 @@ func (s *Service) startBusinessLocked(id int64, r *businessRun, refresh bool) {
 	data.DeviceID = deviceID
 	data.DeviceType = cfg.DeviceType
 	data.Status = "loading"
+	r.refreshReady = false
 	data.Message = "正在获取观演人"
 	data.Usable = false
 	if !refresh || r.session.Token == "" {
@@ -155,6 +274,10 @@ func (s *Service) startBusinessLocked(id int64, r *businessRun, refresh bool) {
 		return
 	}
 	r.busy = true
+	s.stopOrderKeysLocked(r)
+	if r.keys != nil {
+		r.keys.Clear()
+	}
 	s.businessWG.Add(1)
 	go func() { defer s.businessWG.Done(); s.runBusiness(id, r, cfg, data.DeviceID) }()
 }
@@ -163,7 +286,13 @@ func (s *Service) currentBusinessLocked(id int64, r *businessRun) bool {
 		return false
 	}
 	b, ok := s.protocols.Bindings()[id]
-	return ok && sameBinding(b, r.binding) && b.Status == "alive" && !b.Paused
+	if !ok || !sameBinding(b, r.binding) || b.Paused {
+		return false
+	}
+	if b.Status == "alive" {
+		return true
+	}
+	return !r.offlineSince.IsZero() && time.Since(r.offlineSince) < 18*time.Hour
 }
 func (s *Service) businessLog(id int64, r *businessRun, level, text string) {
 	s.mu.Lock()
@@ -175,9 +304,15 @@ func (s *Service) businessLog(id int64, r *businessRun, level, text string) {
 func (s *Service) runBusiness(id int64, r *businessRun, cfg business.Config, deviceID string) {
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Minute)
 	defer cancel()
-	session, people, err := s.businessClient.Refresh(ctx, cfg, deviceID, r.session, func(ctx context.Context) (string, error) {
+	session, people, err := s.businessClient.RefreshWithLogin(s.taskNetworkContext(ctx, id), cfg, deviceID, r.session, func(ctx context.Context) (string, error) {
 		return s.protocols.MiniProgramCode(ctx, id, r.binding, business.AppID)
-	}, func(level, text string) { s.businessLog(id, r, level, text) })
+	}, func(level, text string) { s.businessLog(id, r, level, text) }, func(session business.Session) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.currentBusinessLocked(id, r) {
+			s.adoptOrderSessionLocked(id, r, session)
+		}
+	})
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.currentBusinessLocked(id, r) {
@@ -185,6 +320,17 @@ func (s *Service) runBusiness(id int64, r *businessRun, cfg business.Config, dev
 		return
 	}
 	r.busy = false
+	if business.IsTokenExpired(err) {
+		session = business.Session{}
+	}
+	if session.Token != "" {
+		s.adoptOrderSessionLocked(id, r, session)
+	} else {
+		s.stopOrderKeysLocked(r)
+		if r.keys != nil {
+			r.keys.Clear()
+		}
+	}
 	data, getErr := s.tasks.Business(id)
 	if getErr != nil {
 		return
@@ -203,37 +349,98 @@ func (s *Service) runBusiness(id int64, r *businessRun, cfg business.Config, dev
 		r.session = session
 		_ = s.tasks.SaveBusiness(id, data)
 		_ = s.tasks.AppendLog(id, "error", data.Message)
+		if run := s.inventory.runs[id]; run != nil && run.status == "maintenance" {
+			run.status, run.message = "maintenance_failed", data.Message
+		}
 		return
 	}
 	allowed := map[string]bool{}
 	for _, p := range people {
-		allowed[p.ID] = true
+		allowed[p.ID] = p.Available()
 	}
-	selected := []string{}
+	missing := false
 	for _, id := range data.Selected {
-		if allowed[id] {
-			selected = append(selected, id)
+		if !allowed[id] {
+			missing = true
 		}
 	}
 	data.People = people
-	data.Selected = selected
 	data.Status = "ready"
 	data.Message = fmt.Sprintf("业务已登录 · %d 位观演人", len(people))
+	if missing {
+		data.Message = "已选观演人已不存在或不可用，请重新选择"
+	}
 	data.Usable = true
 	if s.tasks.SaveBusiness(id, data) != nil {
 		_ = s.tasks.AppendLog(id, "error", "观演人保存失败，请重试；原数据保留")
 		return
 	}
 	r.session = session
+	s.persistBusinessSessionLocked(id, r)
+	r.refreshReady = true
+	s.stopOrderKeysLocked(r)
+	s.startOrderKeysLocked(id, r)
 	_ = s.tasks.AppendLog(id, "success", fmt.Sprintf("观演人获取成功：%d 人", len(people)))
+	s.completeMaintenanceLocked(id, r)
+}
+
+// Called under s.mu only after business data and an unexpired key are available.
+func (s *Service) completeMaintenanceLocked(id int64, r *businessRun) {
+	if !r.refreshReady || r.busy || r.keys == nil {
+		return
+	}
+	key, ok := r.keys.Peek()
+	if !ok || !key.Valid(time.Now()) {
+		return
+	}
+	r.refreshReady = false
+	if !r.offlineSince.IsZero() {
+		r.offlineSince = time.Time{}
+		_ = s.store.Delete(fmt.Sprintf("protocol-offline.v1.%d", id))
+	}
+	if run := s.inventory.runs[id]; run != nil && (run.status == "maintenance" || run.status == "maintenance_failed") {
+		run.status, run.message = "stopped", "维护完成"
+	}
+	if !s.maintenanceResume[id] {
+		return
+	}
+	data, err := s.tasks.Business(id)
+	if err != nil {
+		return
+	}
+	available := map[string]bool{}
+	for _, p := range data.People {
+		available[p.ID] = p.Available()
+	}
+	for _, selected := range data.Selected {
+		if !available[selected] {
+			if run := s.inventory.runs[id]; run != nil {
+				run.status, run.message = "stopped", "已选观演人已不存在或不可用，请重新选择"
+			}
+			s.maintenanceResume[id] = false
+			_ = s.tasks.AppendLog(id, "warning", "已选观演人已不存在或不可用，请重新选择；任务未自动恢复")
+			return
+		}
+	}
+	if run := s.inventory.runs[id]; run != nil && (run.status == "maintenance" || run.status == "maintenance_failed") {
+		run.status, run.message = "stopped", "维护完成"
+	}
+	go func() {
+		if err := s.startInventoryMode(id, true, true); err != nil {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			_ = s.tasks.AppendLog(id, "warning", "维护完成但任务未自动恢复："+err.Error())
+		}
+	}()
 }
 func (s *Service) RefreshTaskPeople(id int64, login bool) error {
+	_, err := s.pauseForMaintenance(id)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.requireTaskSession(); err != nil {
-		return err
-	}
-	if err := s.requireInventoryStoppedLocked(id); err != nil {
 		return err
 	}
 	resumed := false
@@ -264,6 +471,79 @@ func (s *Service) RefreshTaskPeople(id int64, login bool) error {
 	s.startBusinessLocked(id, r, !login)
 	return nil
 }
+
+func (s *Service) pauseForMaintenance(id int64) (bool, error) {
+	s.mu.Lock()
+	if err := s.requireTaskSession(); err != nil {
+		s.mu.Unlock()
+		return false, err
+	}
+	r := s.inventory.runs[id]
+	if r != nil && !r.orderInFlight && s.inventory.pending[id] != nil {
+		r.status, r.message = "order_verifying", "下单结果不明，请先核实订单再维护"
+	}
+	if r != nil && (r.status == "order_verifying" || r.status == "order_blocked" || r.status == "order_review") {
+		s.mu.Unlock()
+		return false, errors.New("请先处理当前订单状态，再刷新或重新授权")
+	}
+	resume := s.inventoryActiveLocked(id) || s.maintenanceResume[id]
+	if r != nil && (r.status == "maintenance" || r.status == "maintenance_failed") {
+		resume = s.maintenanceResume[id]
+	}
+	if r != nil && r.status == "order_created" {
+		resume = false
+	}
+	var done <-chan struct{}
+	if resume && r != nil {
+		s.stopInventoryLocked(id, "stopped", "已暂停，准备刷新或重新授权")
+		if r.orderInFlight {
+			done = r.orderDone
+		} else {
+			r.status, r.message = "maintenance", "维护中"
+		}
+	}
+	if !resume && (r == nil || r.status == "stopped" || r.status == "paused" || r.status == "maintenance_failed") {
+		if r == nil {
+			ctx, cancel := context.WithCancel(s.ctx)
+			r = &inventoryRun{ctx: ctx, cancel: cancel, queryCancel: func() {}, match: s.session.CurrentMatch}
+			if s.inventory.runs == nil {
+				s.inventory.runs = map[int64]*inventoryRun{}
+			}
+			s.inventory.runs[id] = r
+		}
+		r.status, r.message = "maintenance", "维护中"
+	}
+	if s.maintenanceResume == nil {
+		s.maintenanceResume = map[int64]bool{}
+	}
+	s.maintenanceResume[id] = resume
+	s.mu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(16 * time.Second):
+			return resume, errors.New("等待在途下单结果超时，维护尚未开始")
+		}
+		s.mu.Lock()
+		if r.orderInFlight {
+			s.mu.Unlock()
+			return resume, errors.New("下单请求仍在途，请稍后重试维护")
+		}
+		if r.status == "stopped" {
+			r.status, r.message = "maintenance", "维护中"
+		}
+		if r.status == "order_created" || r.status == "order_verifying" || r.status == "order_blocked" {
+			s.maintenanceResume[id] = false
+			resume = false
+		}
+		if r.status == "order_verifying" || r.status == "order_blocked" {
+			s.mu.Unlock()
+			return false, errors.New("请先处理当前订单状态，再刷新或重新授权")
+		}
+		s.mu.Unlock()
+	}
+	return resume, nil
+}
 func (s *Service) SaveTaskPeople(id int64, ids []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -284,6 +564,10 @@ func (s *Service) SaveTaskPeople(id int64, ids []string) error {
 }
 func (s *Service) stopTaskBusinessLocked(id int64) {
 	if r := s.businessRuns[id]; r != nil {
+		s.stopOrderKeysLocked(r)
+		if r.keys != nil {
+			r.keys.Clear()
+		}
 		r.cancel()
 		delete(s.businessRuns, id)
 	}

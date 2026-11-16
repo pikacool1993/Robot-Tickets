@@ -124,6 +124,9 @@ func TestParseRealDefaultAndInvalidCounts(t *testing.T) {
 	if _, err = Parse([]byte(`{"code":1,"data":[]}`)); err != nil {
 		t.Fatal("valid empty list rejected")
 	}
+	if _, err = Parse([]byte(`{"code":200,"data":[]}`)); err == nil {
+		t.Fatal("unsupported inventory success code accepted")
+	}
 }
 func TestScheduleWindowBoundaries(t *testing.T) {
 	sale := time.Date(2026, 11, 13, 6, 0, 0, 0, time.UTC)

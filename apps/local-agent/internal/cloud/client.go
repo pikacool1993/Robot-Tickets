@@ -10,6 +10,7 @@ import (
 	"net/http"
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
 	"robot/apps/local-agent/internal/business"
+	"robot/apps/local-agent/internal/netdebug"
 	"time"
 )
 
@@ -94,12 +95,15 @@ func (c *Client) Call(ctx context.Context, method, path, token string, in, out a
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
+		netdebug.Response(ctx, "cloud-server", method, path, 0, nil, started, err)
 		return errors.New("无法连接服务端或请求超时，请检查网络；登录超时后可使用同一实例重试")
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	netdebug.Response(ctx, "cloud-server/wire", method, path, resp.StatusCode, data, started, err)
 	if err != nil || len(data) > 1<<20 {
 		return errors.New("服务端响应读取失败")
 	}
@@ -111,6 +115,7 @@ func (c *Client) Call(ctx context.Context, method, path, token string, in, out a
 	if err != nil {
 		return errors.New("服务端响应解密失败，请重新导入正确的通信配置")
 	}
+	netdebug.Response(ctx, "cloud-server/decrypted", method, path, resp.StatusCode, plain, started, nil)
 	var payload struct {
 		Code string          `json:"code"`
 		Data json.RawMessage `json:"data"`

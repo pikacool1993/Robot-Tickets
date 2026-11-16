@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"golang.org/x/sys/windows"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"robot/apps/local-agent/internal/netdebug"
 	"robot/apps/local-agent/internal/store"
 	"strconv"
 	"strings"
@@ -169,16 +171,23 @@ func (m *Manager) identity(ctx context.Context, k string) bool {
 	a := m.client(k)
 	req, _ := http.NewRequestWithContext(ctx, "GET", a.base+"/robot/health", nil)
 	req.Header.Set("Authorization", "Bearer "+a.token)
+	started := time.Now()
 	res, e := localClient(time.Second).Do(req)
 	if e != nil {
+		netdebug.Response(ctx, k, "GET", "/robot/health", 0, nil, started, e)
 		return false
 	}
 	defer res.Body.Close()
+	raw, readErr := io.ReadAll(io.LimitReader(res.Body, (64<<10)+1))
+	netdebug.Response(ctx, k, "GET", "/robot/health", res.StatusCode, raw, started, readErr)
+	if readErr != nil || len(raw) > 64<<10 {
+		return false
+	}
 	var d struct {
 		Instance, Service string
 		PID               int
 	}
-	return res.StatusCode == 200 && json.NewDecoder(res.Body).Decode(&d) == nil && d.Instance == m.instance && d.Service == k && d.PID > 0 && func() bool { m.mu.Lock(); defer m.mu.Unlock(); return d.PID == m.doc.Runtime[k].PID }()
+	return res.StatusCode == 200 && json.Unmarshal(raw, &d) == nil && d.Instance == m.instance && d.Service == k && d.PID > 0 && func() bool { m.mu.Lock(); defer m.mu.Unlock(); return d.PID == m.doc.Runtime[k].PID }()
 }
 func (m *Manager) Status(k string) Status {
 	m.mu.Lock()
