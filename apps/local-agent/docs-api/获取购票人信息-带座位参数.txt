@@ -1,0 +1,66 @@
+Request
+POST https://fccdn1.k4n.cc/fc/wx_api/v1/Member/getCrewsList?lid2=1626783 HTTP/1.1
+Host: fccdn1.k4n.cc
+Connection: keep-alive
+Content-Length: 117
+Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjE2MjY3ODMsIm9pZCI6ImExNmNlMzljYTE1N2U2NDhkZGYzZjdjYzFkMzEwZDMxIiwibGlkIjowLCJzaWRlIjoid3hfYXBpIiwiYXVkIjoiIiwiZXhwIjoxNzgwMDU4MjQyLCJpYXQiOjE3Nzk5ODYyNDIsImlzcyI6IiIsImp0aSI6IjBkNDhlY2RhM2MyMTUwYWNiMTgxODNiZjdkZjNmZDQ4IiwibmJmIjoxNzc5OTg2MjQyLCJzdWIiOiIifQ.wpD-0IKoENML96fWb9AXCJfDkmUsl7_IVtJLCBSqDwI
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) UnifiedPCWindowsWechat(0xf2541939) XWEB/19841
+xweb_xhr: 1
+Content-Type: application/json;charset:utf-8;
+Accept: */*
+Sec-Fetch-Site: cross-site
+Sec-Fetch-Mode: cors
+Sec-Fetch-Dest: empty
+Referer: https://servicewechat.com/wxffa42ecd6c0e693d/78/page-frame.html
+Accept-Encoding: gzip, deflate, br
+Accept-Language: zh-CN,zh;q=0.9
+
+{
+    "agree": true,
+    "id": "84",
+    "regions": [
+        {
+            "region": 1,
+            "estate": 2,
+            "num": 1,
+            "name": "102",
+            "price": "180.00",
+            "usable_count": 475
+        }
+    ]
+}
+
+--------------------------------------------------------
+
+Response
+HTTP/1.1 200
+Date: Thu, 28 May 2026 16:38:39 GMT
+Content-Type: application/json; charset=utf-8
+Connection: keep-alive
+Vary: Accept-Encoding
+Vary: Accept-Encoding
+Content-Encoding: gzip
+X-Via-JSL: 679faae,-
+Set-Cookie: __jsluid_s=1c373c464c0d254e33b3d50dfe11d08e; max-age=31536000; path=/; HttpOnly; SameSite=None; secure
+X-Cache: bypass
+Content-Length: 231
+
+{
+    "code": 1,
+    "msg": "success",
+    "data": [
+        {
+            "id": 1626783,
+            "uid": 1626783,
+            "realname": "黄孟毓",
+            "real_card_id": "510***********0924",
+            "phone": "137****7605",
+            "is_self": true,
+            "real_card_id2": "510622194709060924",
+            "phone2": "13708187605",
+            "timestamp": 1779986319,
+            "signature": "2779032a8a4a33b0e660d822043548ea"
+        }
+    ],
+    "order_sign": true
+}

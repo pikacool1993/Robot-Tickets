@@ -1,0 +1,147 @@
+Request
+POST https://fccdn1.k4n.cc/fc/wx_api/v1/Login/index HTTP/1.1
+Host: fccdn1.k4n.cc
+Connection: keep-alive
+Content-Length: 1668
+content-type: application/json;charset:utf-8;
+charset: utf-8
+Referer: https://servicewechat.com/wxffa42ecd6c0e693d/78/page-frame.html
+User-Agent: Mozilla/5.0 (Linux; Android 10; ONEPLUS A6000 Build/QKQ1.190716.003; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/142.0.7444.173 Mobile Safari/537.36 XWEB/1420229 MMWEBSDK/20260101 MMWEBID/4815 MicroMessenger/8.0.69.3040(0x2800453F) WeChat/arm64 Weixin NetType/WIFI Language/zh_CN ABI/arm64 MiniProgramEnv/android
+Accept-Encoding: gzip, deflate, br
+
+{
+    "code": "0a1k2wll2FBFih4m82nl2WA11t1k2wln",
+    "e": {
+        "path": "pages/index/index",
+        "query": {
+
+        },
+        "scene": 1089,
+        "referrerInfo": {
+
+        },
+        "mode": "default",
+        "apiCategory": "default"
+    },
+    "s": {
+        "screenWidth": 412,
+        "cpuType": "Qualcomm Technologies, Inc SDM845",
+        "phoneCalendarAuthorized": true,
+        "windowHeight": 821,
+        "bluetoothEnabled": false,
+        "bluetoothAuthorized": true,
+        "language": "zh_CN",
+        "microphoneAuthorized": true,
+        "fontSizeScaleFactor": 1,
+        "locationAuthorized": true,
+        "notificationAuthorized": true,
+        "model": "ONEPLUS A6000",
+        "statusBarHeight": 31,
+        "safeArea": {
+            "width": 412,
+            "right": 412,
+            "top": 31,
+            "left": 0,
+            "bottom": 821,
+            "height": 790
+        },
+        "brand": "OnePlus",
+        "windowWidth": 412,
+        "locationEnabled": true,
+        "benchmarkLevel": 24,
+        "screenHeight": 821,
+        "abi": "arm64-v8a",
+        "version": "8.0.69",
+        "cameraAuthorized": true,
+        "deviceAbi": "arm64-v8a",
+        "system": "Android 10",
+        "memorySize": 7636,
+        "fontSizeSetting": 16,
+        "pixelRatio": 2.625,
+        "deviceOrientation": "portrait",
+        "wifiEnabled": true,
+        "screenTop": 0,
+        "platform": "android",
+        "SDKVersion": "3.14.2",
+        "enableDebug": false,
+        "host": {
+            "env": "WeChat",
+            "version": 671106367
+        },
+        "mode": "default",
+        "appName": "蓉城足球",
+        "devicePixelRatio": 2.625,
+        "deviceId": "17563630508995051121",
+        "safeAreaInsets": {
+            "top": 31,
+            "left": 0,
+            "right": 0,
+            "bottom": 0
+        },
+        "appId": "__UNI__413C80A",
+        "appVersion": "1.0.0",
+        "appVersionCode": "100",
+        "appLanguage": "zh-Hans",
+        "uniCompileVersion": "4.76",
+        "uniCompilerVersion": "4.76",
+        "uniRuntimeVersion": "4.76",
+        "uniPlatform": "mp-weixin",
+        "deviceBrand": "oneplus",
+        "deviceModel": "ONEPLUS A6000",
+        "deviceType": "phone",
+        "osName": "android",
+        "osVersion": "10",
+        "hostVersion": "8.0.69",
+        "hostLanguage": "zh-CN",
+        "hostName": "WeChat",
+        "hostSDKVersion": "3.14.2",
+        "hostFontSizeSetting": 16,
+        "windowTop": 0,
+        "windowBottom": 0,
+        "isUniAppX": false
+    },
+    "v": "240222"
+}
+
+--------------------------------------------------------
+
+Response
+HTTP/1.1 200
+Date: Fri, 06 Mar 2026 06:05:48 GMT
+Content-Type: application/json; charset=utf-8
+Connection: keep-alive
+Vary: Accept-Encoding
+Vary: Accept-Encoding
+Content-Encoding: gzip
+X-Via-JSL: 9c59a18,-
+Set-Cookie: __jsluid_s=5bee112739991aab542e359bb647d7b2; max-age=31536000; path=/; HttpOnly; SameSite=None; secure
+X-Cache: bypass
+Content-Length: 692
+
+{
+    "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjEzNzQwODIsIm9pZCI6IjRmYmEzYTIyMzk5ODEzMmJjZmU5YWE0MTM5MWQyNTgzIiwibGlkIjowLCJzaWRlIjoid3hfYXBpIiwiYXVkIjoiIiwiZXhwIjoxNzcyODQ5MTQ4LCJpYXQiOjE3NzI3NzcxNDgsImlzcyI6IiIsImp0aSI6IjM0M2ZhZmEyM2ExZmE0MWJjZmZjMWUzZTEwNzgzMmJhIiwibmJmIjoxNzcyNzc3MTQ4LCJzdWIiOiIifQ.3ud0K6ppD50xKbP4ZnaYNxTXaSmgQzNOk_EKDShU9FE",
+    "is_update": true,
+    "loginId": 0,
+    "code": 200,
+    "info": {
+        "id": 1374082,
+        "avatar_url": "https:\/\/fc2022.oss-cn-chengdu.aliyuncs.com\/upload\/wxmini\/a1374082\/tmp_334747f6425b257c4947e2f2ec054fa8be8385cb584608ec.jpeg",
+        "nickname": "ccc",
+        "phone": "159****0843",
+        "is_real": 1,
+        "realname": "朱传彦",
+        "birthday": "1995-04-17",
+        "province": "四川省",
+        "city": "成都市",
+        "district": "成华区",
+        "gender": "2",
+        "real_card_id": "510***********032X",
+        "burse": "0.00",
+        "balance": "0.00",
+        "mathc_num": 0,
+        "teller": 0,
+        "priority": 0,
+        "login_time": 1772777148,
+        "is_first": 1
+    }
+}

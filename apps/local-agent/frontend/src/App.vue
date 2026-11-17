@@ -83,7 +83,7 @@ onUnmounted(() => { if (timer) clearInterval(timer); form.password = '' })
       </section>
   </main>
   <dialog ref="resetDialog" class="reset-dialog" aria-labelledby="reset-title" @keydown="confirmDialog($event, confirmReset)" @cancel.prevent="resetDialog?.close()"><header><span class="reset-mark">!</span><div><h2 id="reset-title">重置任务编号</h2><p>此操作会清除本机现有任务</p></div></header><section><p>登录成功后，将删除本地所有任务及其协议账号绑定，并从编号 1 重新开始。</p><p class="reset-warning">任务删除后无法恢复，协议账号本身不会退出。</p></section><footer><button type="button" @click="resetDialog?.close()">取消</button><button type="button" class="reset-confirm" @click="confirmReset">确认并继续登录</button></footer></dialog>
-  <ClientShell v-if="state?.loggedIn && state" :state="state" :busy="busy" @logout="run(async () => { await backend().Logout() })"><TaskWorkspace :state="state" /></ClientShell>
+  <ClientShell v-if="state?.loggedIn && state" :state="state" :busy="busy" @logout="run(async () => { await backend().Logout() })" v-slot="{ page }"><TaskWorkspace :state="state" :page="page" /></ClientShell>
   <ProtocolProxyDialog v-if="proxyOpen" :protocol="form.auth_protocol" :initial="proxyInitial" :busy="busy" :error="proxyError" :restart="proxyRestart" @cancel="cancelProxy" @confirm="confirmProxy" />
 </template>
 <style scoped>

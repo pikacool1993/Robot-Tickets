@@ -1,0 +1,149 @@
+Request
+POST https://fccdn1.k4n.cc/fc/wx_api/v1/Login/index HTTP/1.1
+Host: fccdn1.k4n.cc
+Connection: keep-alive
+Content-Length: 1795
+content-type: application/json;charset:utf-8;
+Accept-Encoding: gzip,compress,br,deflate
+User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 27_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.80(0x18005033) NetType/WIFI Language/zh_CN
+Referer: https://servicewechat.com/wxffa42ecd6c0e693d/78/page-frame.html
+
+{
+    "code": "0e1ELXGa1JIsLM037RGa1E47f90ELXGL",
+    "e": {
+        "path": "pages/index/index",
+        "query": {
+
+        },
+        "scene": 1089,
+        "referrerInfo": {
+
+        },
+        "sessionId": "hash=4036145962868777&ts=1794449258716&host=&version=402673715&device=1&host_scene=0",
+        "mode": "default",
+        "apiCategory": "default"
+    },
+    "s": {
+        "brand": "iPhone",
+        "model": "iPhone 13<iPhone14,5>",
+        "system": "iOS 27.2",
+        "platform": "ios",
+        "benchmarkLevel": 39,
+        "pixelRatio": 3,
+        "screenWidth": 390,
+        "screenHeight": 844,
+        "windowWidth": 390,
+        "windowHeight": 705,
+        "statusBarHeight": 47,
+        "safeArea": {
+            "bottom": 810,
+            "height": 763,
+            "top": 47,
+            "width": 390,
+            "left": 0,
+            "right": 390
+        },
+        "language": "zh_CN",
+        "version": "8.0.80",
+        "fontSizeSetting": 17,
+        "SDKVersion": "3.18.0",
+        "host": {
+            "env": "WeChat",
+            "appId": "",
+            "version": 402673715
+        },
+        "enableDebug": false,
+        "mode": "default",
+        "deviceOrientation": "portrait",
+        "bluetoothEnabled": false,
+        "locationEnabled": true,
+        "wifiEnabled": true,
+        "albumAuthorized": true,
+        "cameraAuthorized": true,
+        "locationAuthorized": true,
+        "microphoneAuthorized": true,
+        "notificationAuthorized": true,
+        "notificationAlertAuthorized": true,
+        "notificationBadgeAuthorized": true,
+        "notificationSoundAuthorized": true,
+        "phoneCalendarAuthorized": false,
+        "bluetoothAuthorized": false,
+        "locationReducedAccuracy": false,
+        "devicePixelRatio": 3,
+        "deviceId": "17772695725274291473",
+        "safeAreaInsets": {
+            "top": 47,
+            "left": 0,
+            "right": 0,
+            "bottom": 34
+        },
+        "appId": "__UNI__413C80A",
+        "appName": "蓉城足球",
+        "appVersion": "1.0.0",
+        "appVersionCode": "100",
+        "appLanguage": "zh-Hans",
+        "uniCompileVersion": "4.76",
+        "uniCompilerVersion": "4.76",
+        "uniRuntimeVersion": "4.76",
+        "uniPlatform": "mp-weixin",
+        "deviceBrand": "iphone",
+        "deviceModel": "iPhone 13<iPhone14,5>",
+        "deviceType": "phone",
+        "osName": "ios",
+        "osVersion": "27.2",
+        "hostVersion": "8.0.80",
+        "hostLanguage": "zh-CN",
+        "hostName": "WeChat",
+        "hostSDKVersion": "3.18.0",
+        "hostFontSizeSetting": 17,
+        "windowTop": 0,
+        "windowBottom": 0,
+        "isUniAppX": false
+    },
+    "v": "240222"
+}
+
+--------------------------------------------------------
+
+Response
+HTTP/1.1 200
+Date: Thu, 12 Nov 2026 02:07:39 GMT
+Content-Type: application/json; charset=utf-8
+Connection: keep-alive
+Vary: Accept-Encoding
+Vary: Accept-Encoding
+Content-Encoding: gzip
+X-Via-JSL: badc901,-
+Set-Cookie: __jsluid_s=2779f8e17239da67b4e576e985834cc1; max-age=31536000; path=/; HttpOnly; SameSite=None; secure
+X-Cache: bypass
+Content-Length: 715
+
+{
+    "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjEzNzQwODIsIm9pZCI6IjRmYmEzYTIyMzk5ODEzMmJjZmU5YWE0MTM5MWQyNTgzIiwibGlkIjowLCJzaWRlIjoid3hfYXBpIiwiYXVkIjoiIiwiZXhwIjoxNzk0NTIxMjU5LCJpYXQiOjE3OTQ0NDkyNTksImlzcyI6IiIsImp0aSI6IjAzNzEwYzEwNjAyOWFjOWFmOWI2NDMzZGFhZTJmN2QwIiwibmJmIjoxNzk0NDQ5MjU5LCJzdWIiOiIifQ.fn1UMnUuFGI8GtQZfx2oNpaETBM5ny-DU4TFSPMyLfg",
+    "is_update": true,
+    "loginId": 0,
+    "code": 200,
+    "info": {
+        "id": 1374082,
+        "avatar_url": "https:\/\/fc2022.oss-cn-chengdu.aliyuncs.com\/upload\/wxmini\/a1374082\/tmp_334747f6425b257c4947e2f2ec054fa8be8385cb584608ec.jpeg",
+        "nickname": "ccc",
+        "phone": "159****0843",
+        "is_real": 1,
+        "realname": "朱传彦",
+        "birthday": "1995-04-17",
+        "province": "四川省",
+        "city": "成都市",
+        "district": "成华区",
+        "gender": "2",
+        "real_card_id": "510***********032X",
+        "burse": "0.00",
+        "balance": "0.00",
+        "mathc_num": 0,
+        "teller": 0,
+        "priority": 0,
+        "unionid": "optlU2ZVmWhhd2dlauVQEGAc96yo",
+        "login_time": 1794449259,
+        "is_first": 1
+    }
+}
+​​

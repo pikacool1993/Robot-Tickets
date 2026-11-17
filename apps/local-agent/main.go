@@ -218,6 +218,7 @@ func (a *App) OrderAfterSale(taskID int64, id, action string) error {
 func (a *App) DeleteOrderRecord(taskID int64, orderID string) error {
 	return a.service.DeleteOrderRecord(taskID, orderID)
 }
+func (a *App) DeleteAllOrderRecords() error { return a.service.DeleteAllOrderRecords() }
 func (a *App) RecoverInventory(id int64, action string) error {
 	return a.service.RecoverInventory(id, action)
 }

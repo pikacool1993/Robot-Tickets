@@ -463,9 +463,6 @@ func (s *Service) DeleteOrderRecord(taskID int64, orderID string) error {
 	if err := s.requireTaskSession(); err != nil {
 		return err
 	}
-	if s.inventory.pending[taskID] != nil {
-		return errors.New("订单结果待核实，不能删除记录")
-	}
 	key := fmt.Sprintf("created-order.v1.%d.%s", taskID, orderID)
 	if s.inventory.orders[key] == nil {
 		return errors.New("订单记录不存在")
@@ -474,6 +471,24 @@ func (s *Service) DeleteOrderRecord(taskID int64, orderID string) error {
 		return errors.New("订单记录删除失败")
 	}
 	delete(s.inventory.orders, key)
+	return nil
+}
+
+func (s *Service) DeleteAllOrderRecords() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireTaskSession(); err != nil {
+		return err
+	}
+	for _, active := range s.orderActions {
+		if active {
+			return errors.New("订单操作正在处理中，请稍后再删除")
+		}
+	}
+	if err := s.store.DeletePrefix("created-order.v1."); err != nil {
+		return errors.New("订单记录删除失败")
+	}
+	s.inventory.orders = map[string]*OrderRecord{}
 	return nil
 }
 

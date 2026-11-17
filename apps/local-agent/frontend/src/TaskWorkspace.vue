@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import InventoryPanel from './InventoryPanel.vue'
 import type { InventoryView, OrderDisplay } from './bridge'
 import ScanAuthorization from './ScanAuthorization.vue'
@@ -7,22 +7,43 @@ import { confirmDialog } from './dialogKeyboard'
 import { backend, type State, type Person, type Task, type TaskView, type ProtocolStatus, type AuthAttempt, type AddressForm } from './bridge'
 const inventoryView = ref<InventoryView | null>(null)
 const historyOrders = ref<OrderDisplay[]>([])
+const orderSearch = ref('')
 const ordersDialog = ref<HTMLDialogElement | null>(null)
 const ordersBusy = ref(false), ordersError = ref('')
 const selectedOrder=ref<OrderDisplay|null>(null)
+const filteredOrders = computed(() => {
+ const needle = orderSearch.value.trim().toLocaleLowerCase()
+ if (!needle) return historyOrders.value
+ return historyOrders.value.filter(order => order.viewers.some(viewer => viewer.name.toLocaleLowerCase().includes(needle)))
+})
 async function showOrders() {
  ordersBusy.value = true; ordersError.value = ''
- try { await nextTick(); ordersDialog.value?.showModal(); historyOrders.value = await backend().GetOrderHistory() }
+ try { historyOrders.value = await backend().GetOrderHistory() }
  catch (e) { ordersError.value = failure(e) } finally { ordersBusy.value = false }
 }
 async function deleteOrder(record: OrderDisplay) {
- if (!window.confirm(`仅删除本地订单记录 ${record.id}，不会取消或更改官方订单。确定删除吗？`)) return
+ if (!window.confirm(`删除本地订单 ${record.id}、对应 token 和详情？不会取消或更改官方订单，此操作不可撤销。`)) return
  ordersBusy.value = true; ordersError.value = ''
- try { await backend().DeleteOrderRecord(record.taskId, record.id); historyOrders.value = historyOrders.value.filter(o => !(o.taskId === record.taskId && o.id === record.id)); inventoryView.value = await backend().GetInventory() }
+ try { await backend().DeleteOrderRecord(record.taskId, record.id); historyOrders.value = historyOrders.value.filter(o => !(o.taskId === record.taskId && o.id === record.id)) }
+ catch (e) { ordersError.value = failure(e) } finally { ordersBusy.value = false }
+}
+async function deleteAllOrders() {
+ const count = historyOrders.value.length
+ if (!count || ordersBusy.value) return
+ if (!window.confirm(`将删除全部 ${count} 条本地订单记录及对应 token 和详情，不会取消或更改官方订单。此操作不可撤销。确定全部删除吗？`)) return
+ ordersBusy.value = true; ordersError.value = ''
+ try { await backend().DeleteAllOrderRecords(); historyOrders.value = []; selectedOrder.value = null }
  catch (e) { ordersError.value = failure(e) } finally { ordersBusy.value = false }
 }
 async function openOrder(record: OrderDisplay) {
- selectedOrder.value=record;ordersError.value=''
+ selectedOrder.value=record;ordersError.value='';await nextTick();ordersDialog.value?.showModal()
+}
+async function refreshOrder(record: OrderDisplay) {
+ if (ordersBusy.value) return
+ ordersBusy.value=true;ordersError.value=''
+ try { await backend().RefreshOrderDetail(record.taskId,record.id);historyOrders.value=await backend().GetOrderHistory();if(selectedOrder.value?.taskId===record.taskId&&selectedOrder.value.id===record.id)selectedOrder.value=historyOrders.value.find(o=>o.taskId===record.taskId&&o.id===record.id)||selectedOrder.value }
+ catch(e) { ordersError.value=failure(e);try{historyOrders.value=await backend().GetOrderHistory()}catch{} }
+ finally { ordersBusy.value=false }
 }
 async function refreshSelectedOrder(){if(!selectedOrder.value||ordersBusy.value)return;ordersBusy.value=true;ordersError.value='';try{await backend().RefreshOrderDetail(selectedOrder.value.taskId,selectedOrder.value.id);historyOrders.value=await backend().GetOrderHistory();selectedOrder.value=historyOrders.value.find(o=>o.id===selectedOrder.value?.id&&o.taskId===selectedOrder.value?.taskId)||selectedOrder.value}catch(e){ordersError.value=failure(e)}finally{ordersBusy.value=false}}
 async function afterSale(action:'cancel'|'refund') {let o=selectedOrder.value;if(!o||ordersBusy.value)return;ordersBusy.value=true;ordersError.value='';try{await backend().RefreshOrderDetail(o.taskId,o.id);historyOrders.value=await backend().GetOrderHistory();o=historyOrders.value.find(x=>x.id===o?.id&&x.taskId===o?.taskId)||o;selectedOrder.value=o;const d=o.details;if(action==='cancel'&&d.status!==5)throw new Error('订单最新状态不是待支付，无法取消');if(action==='refund'&&(d.status!==6||d.pay_type!=='微信支付'||!d.refundEnabled))throw new Error('订单最新状态不符合整单退款条件');const message=action==='cancel'?`订单 ${o.id} 当前待支付，确认取消整个订单？`:`订单 ${o.id} 当前符合整单退款条件，确认申请退掉本订单全部座位？`;if(!window.confirm(message))return;await backend().OrderAfterSale(o.taskId,o.id,action);historyOrders.value=await backend().GetOrderHistory();selectedOrder.value=historyOrders.value.find(x=>x.id===o?.id&&x.taskId===o?.taskId)||o}catch(e){ordersError.value=failure(e);if(selectedOrder.value){try{historyOrders.value=await backend().GetOrderHistory();selectedOrder.value=historyOrders.value.find(x=>x.id===selectedOrder.value?.id&&x.taskId===selectedOrder.value?.taskId)||selectedOrder.value}catch{}}}finally{ordersBusy.value=false}}
@@ -120,7 +141,8 @@ async function setCross(task: Task, value: boolean) {
  } catch (e) { if (alive) crossError.value = failure(e) }
  finally { crossSaving.value = false; if (alive) await pollProtocol() }
 }
-const props = defineProps<{ state: State }>()
+const props = defineProps<{ state: State; page: 'tasks' | 'orders' }>()
+watch(() => props.page, page => { if (page === 'orders') { orderSearch.value=''; void showOrders() } })
 
 const view = ref<TaskView>({ catalog: { stadium: '', tiers: [] }, configError: '', tasks: [] })
 const error = ref(''), loading = ref(true), creating = ref(false), saving = ref(false), saveError = ref('')
@@ -359,9 +381,7 @@ async function deleteTask() {
 
 <template>
   <main class="tw" aria-label="任务工作台">
-
-    <section class="tw-body">
-      <Teleport defer to="#client-sidebar-protocol">
+    <Teleport defer to="#client-sidebar-protocol">
       <section class="tw-service sidebar-service" aria-label="协议服务">
         <div><strong>{{ props.state.authProtocol === 'yyb' ? 'YYB' : '微信' }}协议</strong><span class="sidebar-service-status" :data-state="protocol?.state" role="status">{{ serviceLabels[protocol?.state || ''] || '检查中' }}</span><small>{{ protocol?.address }} · {{ protocol?.proxy || '直连' }}</small></div>
         <div><button :disabled="!!bulkAction || protocolBusy || protocol?.state === 'running'" @click="serviceAction('start')">启动协议</button><button :disabled="!!bulkAction || protocolBusy" @click="serviceAction('restart')">重启</button><button :disabled="!!bulkAction || protocolBusy || protocol?.state === 'stopped'" @click="serviceAction('stop')">关闭协议</button></div>
@@ -372,6 +392,7 @@ async function deleteTask() {
         </div>
       </section>
       </Teleport>
+    <section v-if="props.page === 'tasks'" class="tw-body">
       <div v-if="error" class="tw-alert" role="alert">{{ error }} <button class="tw-link" @click="load().then(() => error = '').catch(e => error = failure(e))">重试读取</button></div>
       <div v-if="view.configError" class="tw-alert" role="alert">{{ view.configError }}</div>
       <div v-if="state.notice" class="tw-alert">{{ state.notice }}</div>
@@ -386,7 +407,6 @@ async function deleteTask() {
               <button :disabled="bulkBlocked || !bulkTargets('start').length" title="启动全部已就绪且未运行的任务，不受搜索过滤影响" @click="runBulk('start')">全部启动</button>
               <button :disabled="bulkBlocked || !bulkTargets('stop').length" title="停止全部尚未停止的任务，不受搜索过滤影响" @click="runBulk('stop')">全部停止</button>
               <button :disabled="bulkBlocked || !bulkTargets('refresh').length" title="刷新全部可维护的在线任务，原运行任务完成后自动恢复" @click="runBulk('refresh')">全部刷新</button>
-              <button :disabled="loading || !!bulkAction || ordersBusy" @click="showOrders">订单记录</button>
               <button :disabled="settingsDisabled || !!bulkAction" aria-haspopup="dialog" @click="openSettings()">设置</button>
             </div>
           </div>
@@ -417,6 +437,35 @@ async function deleteTask() {
         </article>
       </div>
       <footer class="tw-footer"><span>配置自动保存 · 当前客户端共享</span><span>曜石橙</span></footer>
+    </section>
+    <section v-else class="tw-orders-page" aria-labelledby="orders-page-title">
+      <header class="tw-orders-heading">
+        <div><h1 id="orders-page-title">订单 <span class="tw-task-count">{{ historyOrders.length }}</span></h1><p>本地订单汇总 · 详情仅在手动刷新时向服务器查询</p></div>
+        <button class="tw-operation-delete" :disabled="ordersBusy || !historyOrders.length" @click="deleteAllOrders">全部删除</button>
+      </header>
+      <div class="tw-orders-toolbar">
+        <label class="tw-orders-search"><span>按观演人筛选</span><input v-model="orderSearch" type="search" placeholder="输入观演人姓名" autocomplete="off"/><button v-if="orderSearch" type="button" aria-label="清空筛选" @click="orderSearch=''">清空</button></label>
+        <span class="tw-orders-count">显示 {{ filteredOrders.length }} / {{ historyOrders.length }} 条</span>
+      </div>
+      <p v-if="ordersError" class="tw-alert" role="alert">{{ ordersError }}</p>
+      <div v-if="ordersBusy && !historyOrders.length" class="tw-empty" role="status">正在读取本地订单…</div>
+      <div v-else-if="!historyOrders.length" class="tw-empty"><h2>暂无订单记录</h2><p>创建订单后，记录会保存在这里。</p></div>
+      <div v-else-if="!filteredOrders.length" class="tw-empty"><h2>没有匹配的订单</h2><p>试试其他观演人姓名。</p><button @click="orderSearch=''">清空筛选</button></div>
+      <div v-else class="tw-orders-table-wrap">
+        <table class="tw-orders-table">
+          <thead><tr><th>订单 ID / 任务</th><th>观演人</th><th>状态</th><th>票区 / 座位</th><th>支付截止</th><th>金额</th><th>操作</th></tr></thead>
+          <tbody><tr v-for="record in filteredOrders" :key="`${record.taskId}-${record.id}`">
+            <td><button class="tw-order-id" @click="openOrder(record)">{{ record.id }}</button><small>任务 {{ record.taskId }} · {{ record.match.name }}</small><small>{{ fullTime(record.createdAt) }}</small><small v-if="record.detailError" class="tw-order-error">详情查询失败：{{ record.detailError }}</small></td>
+            <td>{{ record.viewers.map(v => v.name).join('、') || '—' }}</td>
+            <td><span class="tw-order-payment" :data-paid="record.details?.id ? record.details.status === 6 : null">{{ record.details?.id ? (record.details.status === 6 ? '已付款' : '未付款') : '—' }}</span></td>
+            <td><template v-if="record.details?.bill?.length"><div v-for="ticket in record.details.bill" :key="ticket.id">{{ ticket.region }}区<template v-if="ticket.estateName"> · {{ ticket.estateName }}</template><template v-if="ticket.row"> · {{ ticket.row }}排{{ ticket.seat }}座</template></div></template><span v-else>—</span></td>
+            <td>{{ record.details?.id ? (record.details.order_end_time || '—') : '—' }}</td>
+            <td>{{ record.details?.id && record.details.payable ? `¥${record.details.payable}` : '—' }}</td>
+            <td><div class="tw-orders-row-actions"><button :disabled="ordersBusy" @click="refreshOrder(record)">{{ ordersBusy ? '处理中…' : '刷新' }}</button><button @click="openOrder(record)">详情</button><button class="tw-operation-delete" :disabled="ordersBusy" @click="deleteOrder(record)">删除</button></div></td>
+          </tr></tbody>
+        </table>
+      </div>
+      <footer class="tw-orders-footer">订单列表仅展示本地记录；刷新操作只查询对应订单。</footer>
     </section>
     <div v-if="tip" role="tooltip" class="tw-tooltip" :style="{ left: `${tip.left}px`, top: `${tip.top}px` }">{{ tip.text }}</div>
     <dialog ref="dialog" class="tw-dialog" :class="{ wide: modal === 'seat' || modal === 'logs', 'tw-log-dialog': modal === 'logs', 'tw-scan-dialog': modal === 'auth' }" aria-labelledby="tw-dialog-title" @cancel.prevent="close()" @keydown="!['auth', 'note', 'address', 'people', 'recover'].includes(modal || '') && confirmDialog($event, confirmTaskDialog)">
@@ -504,8 +553,8 @@ async function deleteTask() {
           <p>受影响任务：{{ protocol?.affected.length ? protocol.affected.join('、') : '暂无已绑定任务' }}。正在等待的扫码也会取消。执行后将取消相关请求并暂停任务，账号凭据保留。</p><p v-if="controlAction === 'restart'">服务恢复后重新检查账号，任务保持暂停。</p><p v-if="protocolError" class="tw-alert" role="alert">{{ protocolError }}</p></div>
       <div class="tw-dialog-footer"><span>{{ protocolBusy ? '处理中…' : '' }}</span><div><button :disabled="!!bulkAction || protocolBusy" @click="controlDialog?.close()">取消</button><button class="tw-primary" :disabled="!!bulkAction || protocolBusy" @click="controlService">确认{{ controlAction === 'stop' ? '关闭' : '重启' }}</button></div></div>
     </dialog>
-    <dialog ref="ordersDialog" class="tw-dialog wide" aria-labelledby="orders-title" @cancel.prevent="selectedOrder ? selectedOrder=null : ordersDialog?.close()">
-      <div class="tw-dialog-head"><div><h2 id="orders-title">{{ selectedOrder ? `订单 ID ${selectedOrder.id}` : '订单记录' }}</h2><p>{{ selectedOrder ? `任务 ${selectedOrder.taskId} · ${selectedOrder.match.name}` : `本地长期保存 · ${historyOrders.length} 条` }}</p></div><button class="tw-close" aria-label="关闭弹窗" @click="selectedOrder ? selectedOrder=null : ordersDialog?.close()">×</button></div>
+    <dialog ref="ordersDialog" class="tw-dialog wide" aria-labelledby="orders-title" @cancel.prevent="ordersDialog?.close();selectedOrder=null">
+      <div class="tw-dialog-head"><div><h2 id="orders-title">{{ selectedOrder ? `订单 ID ${selectedOrder.id}` : '订单记录' }}</h2><p>{{ selectedOrder ? `任务 ${selectedOrder.taskId} · ${selectedOrder.match.name}` : `本地长期保存 · ${historyOrders.length} 条` }}</p></div><div class="tw-order-head-actions"><button v-if="!selectedOrder && historyOrders.length" class="tw-operation-delete" :disabled="ordersBusy" @click="deleteAllOrders">全部删除</button><button class="tw-close" aria-label="关闭弹窗" @click="selectedOrder ? selectedOrder=null : ordersDialog?.close()">×</button></div></div>
       <div class="tw-dialog-content tw-order-history">
        <template v-if="!selectedOrder"><p v-if="ordersError" class="tw-alert" role="alert">{{ ordersError }}</p><p v-if="!historyOrders.length && !ordersBusy" class="tw-note">暂无订单记录。</p>
         <article v-for="record in historyOrders" :key="`${record.taskId}-${record.id}`" class="tw-order-record"><div><strong>订单 ID {{ record.id }}</strong><span class="tw-muted">任务 {{ record.taskId }} · {{ record.match.name }} · {{ fullTime(record.createdAt) }}</span></div><div>{{ record.viewers.map(v => v.name).join('、') }} · {{ record.plan.parts.map(p => `${p.region.name}区 ${p.quantity}张`).join(' + ') }}</div><div class="tw-order-actions"><button :disabled="ordersBusy" @click="openOrder(record)">查看详情</button><button :disabled="ordersBusy" class="tw-operation-delete" @click="deleteOrder(record)">删除记录</button></div></article>
@@ -516,7 +565,7 @@ async function deleteTask() {
         <section class="tw-ticket-section"><h3>已退票明细 · {{ selectedOrder.details?.tuiBill?.length || 0 }} 张</h3><article v-for="ticket in selectedOrder.details?.tuiBill || []" :key="ticket.id" class="tw-ticket"><div><strong>{{ ticket.region }}区 · {{ ticket.estateName || ticket.no }}</strong><small>已退票</small></div><div><b>{{ ticket.row ? `${ticket.row} 排 ${ticket.seat} 座` : '' }}</b><small>¥{{ ticket.price }}</small></div></article></section>
        </template>
       </div>
-      <div class="tw-dialog-footer"><span>{{ selectedOrder ? '订单状态以服务端最新查询为准' : '删除仅清理本地记录，不影响官方订单' }}</span><div v-if="selectedOrder"><button v-if="selectedOrder.details?.status===5" :disabled="ordersBusy" class="tw-danger" @click="afterSale('cancel')">取消未支付订单</button><button v-if="selectedOrder.details?.status===6 && selectedOrder.details?.pay_type==='微信支付' && selectedOrder.details?.refundEnabled" :disabled="ordersBusy" class="tw-danger" @click="afterSale('refund')">整单退款</button><button @click="selectedOrder=null">返回列表</button></div><div v-else><button @click="ordersDialog?.close()">关闭</button></div></div>
+      <div class="tw-dialog-footer"><span>订单状态以服务端最新查询为准</span><div v-if="selectedOrder"><button v-if="selectedOrder.details?.status===5" :disabled="ordersBusy" class="tw-danger" @click="afterSale('cancel')">取消未支付订单</button><button v-if="selectedOrder.details?.status===6 && selectedOrder.details?.pay_type==='微信支付' && selectedOrder.details?.refundEnabled" :disabled="ordersBusy" class="tw-danger" @click="afterSale('refund')">整单退款</button><button @click="ordersDialog?.close();selectedOrder=null">关闭详情</button></div><div v-else><button @click="ordersDialog?.close()">关闭</button></div></div>
     </dialog>
   </main>
 </template>
@@ -524,6 +573,10 @@ async function deleteTask() {
 <style scoped>
 .tw-value.tw-people-ready{display:flex;align-items:center;gap:5px}.tw-people-ready>span{min-width:0;overflow:hidden;text-overflow:ellipsis}.tw-business-ready-icon{width:14px;height:14px;flex-shrink:0;color:var(--active)}
 .tw-people-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.tw-person{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.tw-person-choice{display:flex;align-items:center;gap:12px;flex:1;min-width:0}.tw-person-details{flex-shrink:0}.tw-person small{overflow-wrap:anywhere}.tw-person{flex-wrap:wrap}.tw-person span{display:flex;flex-direction:column;gap:4px}.tw-person small{color:var(--muted)}
+.tw-order-head-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}.tw-order-head-actions .tw-operation-delete{color:var(--app-error)}
+.tw-orders-page{min-width:0;padding:26px 22px 18px}.tw-orders-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.tw-orders-heading p{margin-top:4px;font-size:12px}.tw-orders-heading .tw-operation-delete,.tw-orders-row-actions .tw-operation-delete{color:var(--app-error)}
+.tw-orders-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.tw-orders-search{display:flex;align-items:center;gap:8px;min-width:280px;color:var(--muted);font-size:12px}.tw-orders-search input{box-sizing:border-box;width:min(300px,45vw);padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font:inherit}.tw-orders-search button{padding:5px 8px;font-size:12px}.tw-orders-count,.tw-orders-footer{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.tw-orders-table-wrap{width:100%;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel)}.tw-orders-table{width:100%;min-width:980px;table-layout:fixed;border-collapse:collapse;font-size:12px}.tw-orders-table th,.tw-orders-table td{box-sizing:border-box;padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle;overflow-wrap:anywhere}.tw-orders-table th{position:sticky;top:0;background:var(--soft);color:var(--muted);font-weight:550;white-space:nowrap}.tw-orders-table tbody tr:last-child td{border-bottom:0}.tw-orders-table tbody tr:hover{background:var(--soft)}.tw-orders-table th:nth-child(1){width:17%}.tw-orders-table th:nth-child(2){width:13%}.tw-orders-table th:nth-child(3){width:9%}.tw-orders-table th:nth-child(4){width:22%}.tw-orders-table th:nth-child(5){width:16%}.tw-orders-table th:nth-child(6){width:9%}.tw-orders-table th:nth-child(7){width:14%}.tw-orders-table td:first-child{font-variant-numeric:tabular-nums}.tw-orders-table td:first-child small{display:block;margin-top:2px;color:var(--muted);font-size:10px}.tw button.tw-order-id{display:block;padding:0;border:0;background:transparent;color:var(--active);font-weight:600;font-variant-numeric:tabular-nums}.tw button.tw-order-id:hover{background:transparent;text-decoration:underline}.tw-order-payment{white-space:nowrap;color:var(--muted)}.tw-order-payment[data-paid=true]{color:var(--app-success);font-weight:600}.tw-orders-row-actions{display:flex;align-items:center;flex-wrap:wrap;gap:4px}.tw-orders-row-actions button{padding:4px 6px;font-size:11px;white-space:nowrap}.tw-orders-footer{padding:10px 2px}.tw-orders-page .tw-empty{margin-top:14px;padding:42px 16px}.tw-orders-page .tw-empty p{margin:8px 0 14px}
+.tw-orders-table td:first-child small.tw-order-error{color:var(--app-warning)}
 .tw-order-history{max-height:65vh;overflow:auto}.tw-order-record{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 16px;padding:12px 0;border-bottom:1px solid var(--line);align-items:center}.tw-order-record>div{min-width:0;overflow-wrap:anywhere}.tw-order-record>div:first-child{display:flex;flex-direction:column}.tw-order-record .tw-muted{font-size:12px;color:var(--muted)}.tw-order-actions{grid-column:2;grid-row:1/3;display:flex;gap:6px}.tw-order-actions .tw-operation-delete{color:var(--app-error)}.tw-order-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.tw-order-status{font-size:13px;font-weight:600;color:var(--app-accent)}.tw-order-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--line);border-left:1px solid var(--line)}.tw-order-facts>div{min-width:0;padding:9px 11px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.tw-order-facts small,.tw-ticket small{display:block;font-size:11px;color:var(--muted);overflow-wrap:anywhere}.tw-order-facts strong{font-size:12px;font-weight:550;overflow-wrap:anywhere}.tw-ticket-section{margin-top:20px}.tw-ticket-section h3{padding-bottom:8px;border-bottom:1px solid var(--line)}.tw-ticket{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;padding:11px 2px;border-bottom:1px solid var(--line)}.tw-ticket strong,.tw-ticket b{font-size:12px;font-weight:550}.tw-ticket>div:last-child{text-align:right}.tw-danger{color:var(--app-error)!important}
 .tw-task-controls{position:sticky;top:0;z-index:10;margin:0 -22px 18px;padding:12px 22px;background:var(--bg);border-bottom:1px solid var(--line);box-shadow:0 6px 12px var(--app-shadow)}
 .tw-task-controls .tw-heading{margin-bottom:10px;flex-wrap:wrap}
@@ -531,6 +584,7 @@ async function deleteTask() {
 .tw-task-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-left:auto}
 .tw-task-count{font-size:18px;font-weight:400;color:var(--muted);margin-left:6px;font-variant-numeric:tabular-nums}
 @media(max-width:760px){.tw-task-controls{margin-left:-12px;margin-right:-12px;padding:10px 12px}}
+@media(max-width:760px){.tw-orders-page{padding:20px 12px 14px}.tw-orders-heading{align-items:flex-start}.tw-orders-toolbar{align-items:flex-start;flex-direction:column}.tw-orders-search{width:100%;min-width:0;flex-wrap:wrap}.tw-orders-search input{flex:1;width:auto}}
 .tw-dialog.tw-scan-dialog{box-sizing:border-box;width:370px;height:fit-content;min-height:0;max-height:none;overflow:visible}
 .tw-scan-dialog .tw-dialog-head{position:static;padding:6px 12px;border-radius:12px 12px 0 0}.tw-scan-dialog .tw-dialog-head h2{font-size:13px}.tw-scan-dialog .tw-dialog-head p{display:none}.tw-scan-dialog .tw-dialog-content{padding:6px 10px;overflow:visible}.tw-scan-dialog .tw-dialog-footer{display:none}
 .tw-service{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:18px}.tw-service>div{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tw-service span,.tw-service small{color:var(--muted);font-size:12px}.tw-service p{width:100%;font-size:12px;color:var(--app-warning)}.tw-auth{text-align:center}.tw-auth img{display:block;width:220px;max-width:100%;height:auto;margin:14px auto;background:white}.tw-auth p{font-size:13px;margin:12px 0;overflow-wrap:anywhere}

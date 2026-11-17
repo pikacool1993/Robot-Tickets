@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,6 +58,27 @@ func TestDurableOrderSnapshotAndHistoryDeletion(t *testing.T) {
 	}
 	if r.status != "order_created" || r.order.ID != "12345" {
 		t.Fatal("deleting history changed current task state")
+	}
+}
+
+func TestDeleteAllOrderRecordsClearsHistoryAndTokens(t *testing.T) {
+	s, runs, _ := orderFixture(t, 2)
+	for i, r := range runs {
+		s.saveCreatedOrderLocked(r.task.ID, r, *r.plan, fmt.Sprintf("order-%d", i+1), fmt.Sprintf("token-%d", i+1), nil)
+	}
+	s.inventory.pending = map[int64]*orderAttempt{runs[0].task.ID: {TaskID: runs[0].task.ID}}
+	if err := s.DeleteAllOrderRecords(); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.inventory.orders) != 0 {
+		t.Fatalf("in-memory orders remain: %d", len(s.inventory.orders))
+	}
+	stored, err := s.store.ListPrefix("created-order.v1.")
+	if err != nil || len(stored) != 0 {
+		t.Fatalf("persisted order records remain: %v %v", stored, err)
+	}
+	if s.inventory.pending[runs[0].task.ID] == nil {
+		t.Fatal("deleting history changed the pending inventory attempt")
 	}
 }
 

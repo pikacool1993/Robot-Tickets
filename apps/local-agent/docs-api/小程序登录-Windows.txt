@@ -1,0 +1,140 @@
+Request
+POST https://fccdn1.k4n.cc/fc/wx_api/v1/Login/index HTTP/1.1
+Host: fccdn1.k4n.cc
+Connection: keep-alive
+Content-Length: 1443
+xweb_xhr: 1
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090c37)XWEB/14315
+Content-Type: application/json;charset:utf-8;
+Accept: */*
+Sec-Fetch-Site: cross-site
+Sec-Fetch-Mode: cors
+Sec-Fetch-Dest: empty
+Referer: https://servicewechat.com/wxffa42ecd6c0e693d/77/page-frame.html
+Accept-Encoding: gzip, deflate, br
+Accept-Language: zh-CN,zh;q=0.9
+
+{
+    "code": "0f16mFkl2xWp7g4lvGkl2nskGA36mFkc",
+    "e": {
+        "path": "pages/index/index",
+        "query": {},
+        "scene": 1256,
+        "referrerInfo": {},
+        "apiCategory": "default"
+    },
+    "s": {
+        "albumAuthorized": true,
+        "benchmarkLevel": -1,
+        "bluetoothEnabled": false,
+        "brand": "microsoft",
+        "cameraAuthorized": true,
+        "fontSizeSetting": 15,
+        "language": "zh_CN",
+        "locationAuthorized": true,
+        "locationEnabled": true,
+        "microphoneAuthorized": true,
+        "model": "microsoft",
+        "notificationAuthorized": true,
+        "notificationSoundEnabled": true,
+        "pixelRatio": 1.25,
+        "platform": "windows",
+        "power": 100,
+        "safeArea": {
+            "bottom": 774,
+            "height": 774,
+            "left": 0,
+            "right": 400,
+            "top": 0,
+            "width": 400
+        },
+        "screenHeight": 774,
+        "screenWidth": 400,
+        "statusBarHeight": 20,
+        "system": "Windows 10 x64",
+        "theme": "light",
+        "version": "3.9.12",
+        "wifiEnabled": true,
+        "windowHeight": 774,
+        "windowWidth": 400,
+        "SDKVersion": "3.9.1",
+        "enableDebug": false,
+        "host": {
+            "appId": "",
+            "env": "WeChat"
+        },
+        "devicePixelRatio": 1.25,
+        "deviceId": "17552434467518342126",
+        "safeAreaInsets": {
+            "top": 0,
+            "left": 0,
+            "right": 0,
+            "bottom": 0
+        },
+        "appId": "__UNI__413C80A",
+        "appName": "蓉城足球",
+        "appVersion": "1.0.0",
+        "appVersionCode": "100",
+        "appLanguage": "zh-Hans",
+        "uniCompileVersion": "3.99",
+        "uniRuntimeVersion": "3.99",
+        "uniPlatform": "mp-weixin",
+        "deviceBrand": "microsoft",
+        "deviceModel": "microsoft",
+        "deviceType": "phone",
+        "osName": "windows",
+        "osVersion": "10",
+        "hostTheme": "light",
+        "hostVersion": "3.9.12",
+        "hostLanguage": "zh-CN",
+        "hostName": "WeChat",
+        "hostSDKVersion": "3.9.1",
+        "hostFontSizeSetting": 15,
+        "windowTop": 0,
+        "windowBottom": 0
+    },
+    "v": "240222"
+}
+
+--------------------------------------------------------
+
+Response
+HTTP/1.1 200
+Date: Fri, 15 Aug 2025 07:37:28 GMT
+Content-Type: application/json; charset=utf-8
+Connection: keep-alive
+Vary: Accept-Encoding
+Vary: Accept-Encoding
+Content-Encoding: gzip
+X-Via-JSL: c84a5e4,-
+Set-Cookie: __jsluid_s=24a5af7011ab9e8df634d171f13399d9; max-age=31536000; path=/; HttpOnly; SameSite=None; secure
+X-Cache: bypass
+Content-Length: 692
+
+{
+    "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjE0MDI2NjgsIm9pZCI6IjMwNTA0YzE0YTZmMDhiMjRhNTM5ZmI0ZTBjOGE5OTEyIiwibGlkIjowLCJzaWRlIjoid3hfYXBpIiwiYXVkIjoiIiwiZXhwIjoxNzU1MzE1NDQ4LCJpYXQiOjE3NTUyNDM0NDgsImlzcyI6IiIsImp0aSI6IjE3MGZiMmNjMDhmN2FkNDdmZjgyMjgwODg0ZGRkNzcwIiwibmJmIjoxNzU1MjQzNDQ4LCJzdWIiOiIifQ.XvRsBn7ZGzGOLCHm-05GNh9Qw6jNlWchLdLMXzZjVcc",
+    "is_update": true,
+    "loginId": 0,
+    "code": 200,
+    "info": {
+        "id": 1402668,
+        "avatar_url": "https://fc2022.oss-cn-chengdu.aliyuncs.com/upload/wxmini/a1402668/tmp_9b1a5d5510f05e90985b5e4fe468f4c261e745962154229ebcf5762e9447cf5e.jpeg",
+        "nickname": "kk",
+        "phone": "158****3664",
+        "is_real": 1,
+        "realname": "黄孟军",
+        "birthday": "1995-06-23",
+        "province": "四川省",
+        "city": "成都市",
+        "district": "成华区",
+        "gender": "1",
+        "real_card_id": "510***********0918",
+        "burse": "0.00",
+        "balance": "0.00",
+        "mathc_num": 0,
+        "teller": 0,
+        "priority": 2,
+        "login_time": 1755243448,
+        "is_first": 1
+    }
+}

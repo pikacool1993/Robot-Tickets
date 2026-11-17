@@ -73,6 +73,11 @@ func (s *Store) Delete(name string) error {
 	return err
 }
 
+func (s *Store) DeletePrefix(prefix string) error {
+	_, err := s.db.Exec("DELETE FROM settings WHERE substr(name,1,?)=?", len(prefix), prefix)
+	return err
+}
+
 func (s *Store) ListPrefix(prefix string) (map[string][]byte, error) {
 	rows, err := s.db.Query("SELECT name,value FROM settings WHERE name LIKE ? ESCAPE '\\'", escapeLike(prefix)+"%")
 	if err != nil {
