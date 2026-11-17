@@ -47,6 +47,8 @@ type Service struct {
 	businessWG        sync.WaitGroup
 	businessClient    businessAPI
 	orderClient       orderSender
+	orderActions      map[string]bool
+	orderDetailWG     sync.WaitGroup
 	businessRuns      map[int64]*businessRun
 	orderKeys         map[string]*userkey.Cache
 	businessDone      chan struct{}
@@ -351,6 +353,7 @@ func (s *Service) Close() {
 	}
 	s.businessWG.Wait()
 	s.inventory.wg.Wait()
+	s.orderDetailWG.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.session != nil {

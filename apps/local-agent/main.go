@@ -209,6 +209,12 @@ func (a *App) GetTaskPersonDetails(id int64, personID string) (tasks.PersonView,
 func (a *App) GetInventory() (agent.InventoryView, error)     { return a.service.InventoryView() }
 func (a *App) SetSaleStopped(value bool) error                { return a.service.SetSaleStopped(value) }
 func (a *App) GetOrderHistory() ([]agent.OrderDisplay, error) { return a.service.GetOrderHistory() }
+func (a *App) RefreshOrderDetail(taskID int64, id string) error {
+	return a.service.RefreshOrderDetail(taskID, id)
+}
+func (a *App) OrderAfterSale(taskID int64, id, action string) error {
+	return a.service.OrderAfterSale(taskID, id, action)
+}
 func (a *App) DeleteOrderRecord(taskID int64, orderID string) error {
 	return a.service.DeleteOrderRecord(taskID, orderID)
 }

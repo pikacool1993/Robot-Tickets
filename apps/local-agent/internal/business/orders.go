@@ -24,6 +24,131 @@ type OrderResult struct {
 	Delay   time.Duration
 }
 
+type OrderTicket struct {
+	ID         int64  `json:"id"`
+	No         string `json:"no"`
+	Price      string `json:"price"`
+	Status     int    `json:"status"`
+	Region     int    `json:"region"`
+	Estate     int    `json:"estate"`
+	Row        int    `json:"row"`
+	Seat       int    `json:"seat"`
+	RealName   string `json:"realname"`
+	Phone      string `json:"phone"`
+	EstateName string `json:"estateName"`
+}
+type OrderDetail struct {
+	ID            int64         `json:"id"`
+	Status        int           `json:"status"`
+	CreateTime    string        `json:"create_time"`
+	OrderEndTime  string        `json:"order_end_time"`
+	Payable       string        `json:"payable"`
+	Payed         string        `json:"payed"`
+	Refund        string        `json:"refund"`
+	CountBill     int           `json:"count_bill"`
+	RefundBill    int           `json:"refund_bill"`
+	PayType       string        `json:"pay_type"`
+	RefundEnabled bool          `json:"refundEnabled"`
+	Bill          []OrderTicket `json:"bill"`
+	Refunded      []OrderTicket `json:"tuiBill"`
+}
+
+func (c *Client) MatchOrderInfo(ctx context.Context, cfg Config, session Session, id string) (OrderDetail, error) {
+	var out struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			OrderDetail
+			Match struct {
+				Refund bool `json:"refund"`
+			} `json:"match"`
+		} `json:"data"`
+	}
+	if err := c.callOrderAPI(ctx, cfg, session, "/fc/wx_api/v1/MatchOrder/getMatchOrderInfo", map[string]string{"id": id}, &out); err != nil {
+		return OrderDetail{}, err
+	}
+	if out.Code != 1 {
+		return OrderDetail{}, errors.New(out.Msg)
+	}
+	if strconv.FormatInt(out.Data.ID, 10) != id {
+		return OrderDetail{}, errors.New("订单详情 ID 与请求不一致")
+	}
+	detail := out.Data.OrderDetail
+	detail.RefundEnabled = out.Data.Match.Refund
+	return detail, nil
+}
+
+func (c *Client) CancelMatchOrder(ctx context.Context, cfg Config, session Session, id int64) error {
+	return c.matchOrderAction(ctx, cfg, session, "/fc/wx_api/v1/MatchOrder/cancelOrder", id)
+}
+func (c *Client) RefundMatchOrder(ctx context.Context, cfg Config, session Session, id int64) error {
+	return c.matchOrderAction(ctx, cfg, session, "/fc/wx_api/v1/MatchOrder/refundOrder", id)
+}
+func (c *Client) matchOrderAction(ctx context.Context, cfg Config, session Session, path string, id int64) error {
+	var out struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := c.callOrderAPI(ctx, cfg, session, path, map[string]int64{"order_id": id}, &out); err != nil {
+		return err
+	}
+	if out.Code != 1 {
+		return errors.New(out.Msg)
+	}
+	return nil
+}
+
+func (c *Client) callOrderAPI(ctx context.Context, cfg Config, session Session, path string, body, out any) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if session.Token == "" || session.UserID == "" {
+		return errors.New("订单凭据不完整")
+	}
+	if path != "/fc/wx_api/v1/MatchOrder/getMatchOrderInfo" && path != "/fc/wx_api/v1/MatchOrder/cancelOrder" && path != "/fc/wx_api/v1/MatchOrder/refundOrder" {
+		return errors.New("订单接口路径无效")
+	}
+	u := N1 + path + "?lid2=" + url.QueryEscape(session.UserID)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return errors.New("订单请求参数无效")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json;charset=utf-8")
+	req.Header.Set("User-Agent", cfg.Template.UserAgent)
+	req.Header.Set("Referer", cfg.Template.Referer)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	client := *c.http
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	started := time.Now()
+	res, err := client.Do(req)
+	if err != nil {
+		netdebug.Response(ctx, "N1", "POST", path, 0, nil, started, err)
+		return err
+	}
+	defer res.Body.Close()
+	raw, err = io.ReadAll(io.LimitReader(res.Body, (2<<20)+1))
+	netdebug.Response(ctx, "N1", "POST", path, res.StatusCode, raw, started, err)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return &APIError{HTTP: res.StatusCode}
+	}
+	if len(raw) > 2<<20 {
+		return errors.New("订单响应过大")
+	}
+	if err = json.Unmarshal(raw, out); err != nil {
+		return errors.New("订单响应格式异常")
+	}
+	return nil
+}
+
 func (r OrderResult) BlocksPurchase() bool {
 	for _, hint := range []string{"您有未支付的订单", "此身份证已购买过本场比赛门票", "您已超过最高购票量"} {
 		if strings.Contains(r.Message, hint) {

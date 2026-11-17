@@ -26,24 +26,29 @@ type OrderViewer struct {
 	Phone string `json:"phone"`
 }
 type OrderRecord struct {
-	Account   string               `json:"account"`
-	ID        string               `json:"id"`
-	TaskID    int64                `json:"taskId"`
-	Match     protocol.MatchConfig `json:"match"`
-	ViewerIDs []string             `json:"viewerIds"`
-	Viewers   []OrderViewer        `json:"viewers"`
-	Plan      inventory.Plan       `json:"plan"`
-	CreatedAt time.Time            `json:"createdAt"`
-	Token     string               `json:"token"`
+	Account     string               `json:"account"`
+	UserID      string               `json:"userId"`
+	ID          string               `json:"id"`
+	TaskID      int64                `json:"taskId"`
+	Match       protocol.MatchConfig `json:"match"`
+	ViewerIDs   []string             `json:"viewerIds"`
+	Viewers     []OrderViewer        `json:"viewers"`
+	Plan        inventory.Plan       `json:"plan"`
+	CreatedAt   time.Time            `json:"createdAt"`
+	Token       string               `json:"token"`
+	Details     business.OrderDetail `json:"details"`
+	DetailError string               `json:"detailError,omitempty"`
 }
 type OrderDisplay struct {
-	ID        string               `json:"id"`
-	TaskID    int64                `json:"taskId"`
-	Match     protocol.MatchConfig `json:"match"`
-	ViewerIDs []string             `json:"viewerIds"`
-	Viewers   []OrderViewer        `json:"viewers"`
-	Plan      inventory.Plan       `json:"plan"`
-	CreatedAt time.Time            `json:"createdAt"`
+	ID          string               `json:"id"`
+	TaskID      int64                `json:"taskId"`
+	Match       protocol.MatchConfig `json:"match"`
+	ViewerIDs   []string             `json:"viewerIds"`
+	Viewers     []OrderViewer        `json:"viewers"`
+	Plan        inventory.Plan       `json:"plan"`
+	CreatedAt   time.Time            `json:"createdAt"`
+	Details     business.OrderDetail `json:"details"`
+	DetailError string               `json:"detailError,omitempty"`
 }
 
 type orderAttempt struct {
@@ -217,6 +222,12 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 	if created {
 		s.clearSubmissionLocked(id)
 		s.saveCreatedOrderLocked(id, r, submittedPlan, result.OrderID, session.Token, pending.Viewers)
+		record := *r.order
+		s.orderDetailWG.Add(1)
+		go func() {
+			defer s.orderDetailWG.Done()
+			_ = s.refreshOrderDetail(cfg, &record)
+		}()
 	}
 	if r.stopRequested || r.status == "stopping" {
 		r.orderInFlight, r.orderPrepared = false, false
@@ -290,7 +301,7 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 
 func (s *Service) saveCreatedOrderLocked(id int64, r *inventoryRun, p inventory.Plan, orderID, token string, viewers []OrderViewer) {
 	p.Parts = append([]inventory.Allocation{}, p.Parts...)
-	record := &OrderRecord{Account: r.business.binding.Protocol + ":" + r.business.binding.Account.Ref, ID: orderID, TaskID: id, Match: r.match, ViewerIDs: append([]string{}, r.task.PeopleSelected...), Viewers: append([]OrderViewer{}, viewers...), Plan: p, CreatedAt: s.calibratedNowLocked(), Token: token}
+	record := &OrderRecord{Account: r.business.binding.Protocol + ":" + r.business.binding.Account.Ref, UserID: r.business.session.UserID, ID: orderID, TaskID: id, Match: r.match, ViewerIDs: append([]string{}, r.task.PeopleSelected...), Viewers: append([]OrderViewer{}, viewers...), Plan: p, CreatedAt: s.calibratedNowLocked(), Token: token}
 	r.order = record
 	if s.store != nil {
 		if s.inventory.orders == nil {
@@ -323,7 +334,7 @@ func (s *Service) GetOrderHistory() ([]OrderDisplay, error) {
 	}
 	items := make([]OrderDisplay, 0, len(s.inventory.orders))
 	for _, record := range s.inventory.orders {
-		copy := OrderDisplay{ID: record.ID, TaskID: record.TaskID, Match: record.Match, Plan: record.Plan, CreatedAt: record.CreatedAt}
+		copy := OrderDisplay{ID: record.ID, TaskID: record.TaskID, Match: record.Match, Plan: record.Plan, CreatedAt: record.CreatedAt, Details: record.Details, DetailError: record.DetailError}
 		copy.ViewerIDs = append([]string{}, record.ViewerIDs...)
 		copy.Viewers = append([]OrderViewer{}, record.Viewers...)
 		for i := range copy.Viewers {
@@ -334,6 +345,116 @@ func (s *Service) GetOrderHistory() ([]OrderDisplay, error) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
 	return items, nil
+}
+
+func (s *Service) findOrderLocked(taskID int64, id string) (*OrderRecord, string) {
+	key := fmt.Sprintf("created-order.v1.%d.%s", taskID, id)
+	if r := s.inventory.orders[key]; r != nil {
+		return r, key
+	}
+	return nil, key
+}
+func (s *Service) persistOrderDetailLocked(record *OrderRecord, key string, detail business.OrderDetail, detailErr string) error {
+	record.Details = detail
+	record.DetailError = detailErr
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	if err = s.store.Put(key, raw); err != nil {
+		return err
+	}
+	s.inventory.orders[key] = record
+	return nil
+}
+func (s *Service) refreshOrderDetail(cfg business.Config, record *OrderRecord) error {
+	if record == nil || s.businessClient == nil {
+		return errors.New("订单记录不存在")
+	}
+	detail, err := s.businessClient.MatchOrderInfo(s.ctx, cfg, business.Session{Token: record.Token, UserID: record.UserID}, record.ID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, key := s.findOrderLocked(record.TaskID, record.ID)
+	if current == nil {
+		return errors.New("订单记录不存在")
+	}
+	if err != nil {
+		current.DetailError = err.Error()
+		raw, _ := json.Marshal(current)
+		_ = s.store.Put(key, raw)
+		return err
+	}
+	return s.persistOrderDetailLocked(current, key, detail, "")
+}
+func (s *Service) RefreshOrderDetail(taskID int64, id string) error {
+	s.mu.Lock()
+	if err := s.requireTaskSession(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	record, _ := s.findOrderLocked(taskID, id)
+	if record == nil {
+		s.mu.Unlock()
+		return errors.New("订单记录不存在")
+	}
+	copy := *record
+	cfg := s.session.BusinessConfig
+	s.mu.Unlock()
+	return s.refreshOrderDetail(cfg, &copy)
+}
+func (s *Service) OrderAfterSale(taskID int64, id, action string) error {
+	if action != "cancel" && action != "refund" {
+		return errors.New("售后操作无效")
+	}
+	s.mu.Lock()
+	if err := s.requireTaskSession(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	record, _ := s.findOrderLocked(taskID, id)
+	if record == nil {
+		s.mu.Unlock()
+		return errors.New("订单记录不存在")
+	}
+	if s.orderActions == nil {
+		s.orderActions = map[string]bool{}
+	}
+	key := fmt.Sprintf("%d:%s", taskID, id)
+	if s.orderActions[key] {
+		s.mu.Unlock()
+		return errors.New("该订单操作正在处理中")
+	}
+	s.orderActions[key] = true
+	copy := *record
+	cfg := s.session.BusinessConfig
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.orderActions, key)
+		s.mu.Unlock()
+	}()
+	detail := copy.Details
+	if detail.ID == 0 {
+		return errors.New("请先刷新订单详情")
+	}
+	if action == "cancel" && detail.Status != 5 {
+		return errors.New("订单当前不是待支付状态，不能取消")
+	}
+	if action == "refund" && (detail.Status != 6 || detail.PayType != "微信支付" || !detail.RefundEnabled) {
+		return errors.New("订单当前不符合整单退款条件")
+	}
+	snap := copy
+	var err error
+	if action == "cancel" {
+		err = s.businessClient.CancelMatchOrder(s.ctx, cfg, business.Session{Token: snap.Token, UserID: snap.UserID}, detail.ID)
+	} else {
+		err = s.businessClient.RefundMatchOrder(s.ctx, cfg, business.Session{Token: snap.Token, UserID: snap.UserID}, detail.ID)
+	}
+	if err != nil {
+		_ = s.refreshOrderDetail(cfg, &snap)
+		return fmt.Errorf("操作结果待确认：%w", err)
+	}
+	return s.refreshOrderDetail(cfg, &snap)
 }
 
 func (s *Service) DeleteOrderRecord(taskID int64, orderID string) error {

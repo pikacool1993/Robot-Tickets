@@ -76,7 +76,12 @@ func TestRestartIgnoresUnfinishedExecutionAndLegacyMarkers(t *testing.T) {
 		t.Fatal("restart restored execution flags or lost history")
 	}
 	// Keep the logged-in test session and emulate the fresh execution state.
-	s.inventory = next.inventory
+	s.inventory.settings = next.inventory.settings
+	s.inventory.runs = next.inventory.runs
+	s.inventory.orders = next.inventory.orders
+	s.inventory.pending = next.inventory.pending
+	s.inventory.saleStops = next.inventory.saleStops
+	s.inventory.manual = next.inventory.manual
 	s.inventory.synced = true
 	s.inventory.wall = time.Now()
 	s.inventory.anchor = time.Now()

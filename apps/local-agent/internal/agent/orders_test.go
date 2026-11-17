@@ -35,11 +35,33 @@ func (f orderSenderFunc) CreateOrder(ctx context.Context, cfg business.Config, s
 
 type stockStub struct {
 	*business.Client
-	query func(context.Context, business.Config, business.Session, string) ([]byte, error)
+	query  func(context.Context, business.Config, business.Session, string) ([]byte, error)
+	detail func(context.Context, business.Config, business.Session, string) (business.OrderDetail, error)
+	cancel func(context.Context, business.Config, business.Session, int64) error
+	refund func(context.Context, business.Config, business.Session, int64) error
 }
 
 func (s *stockStub) Stock(ctx context.Context, cfg business.Config, session business.Session, id string) ([]byte, error) {
 	return s.query(ctx, cfg, session, id)
+}
+
+func (s *stockStub) MatchOrderInfo(ctx context.Context, cfg business.Config, session business.Session, id string) (business.OrderDetail, error) {
+	if s.detail == nil {
+		return business.OrderDetail{}, errors.New("test order detail unavailable")
+	}
+	return s.detail(ctx, cfg, session, id)
+}
+func (s *stockStub) CancelMatchOrder(ctx context.Context, cfg business.Config, session business.Session, id int64) error {
+	if s.cancel == nil {
+		return errors.New("test cancel unavailable")
+	}
+	return s.cancel(ctx, cfg, session, id)
+}
+func (s *stockStub) RefundMatchOrder(ctx context.Context, cfg business.Config, session business.Session, id int64) error {
+	if s.refund == nil {
+		return errors.New("test refund unavailable")
+	}
+	return s.refund(ctx, cfg, session, id)
 }
 
 func orderFixture(t *testing.T, n int) (*Service, []*inventoryRun, userkey.Material) {
@@ -83,7 +105,7 @@ func orderFixture(t *testing.T, n int) (*Service, []*inventoryRun, userkey.Mater
 		s.inventory.runs[task.ID] = r
 		runs = append(runs, r)
 	}
-	t.Cleanup(func() { cancel(); s.inventory.wg.Wait(); s.businessWG.Wait(); db.Close() })
+	t.Cleanup(func() { cancel(); s.inventory.wg.Wait(); s.businessWG.Wait(); s.orderDetailWG.Wait(); db.Close() })
 	return s, runs, key
 }
 

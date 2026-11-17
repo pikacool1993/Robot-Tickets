@@ -13,6 +13,9 @@ import (
 
 type businessAPI interface {
 	orderSender
+	MatchOrderInfo(context.Context, business.Config, business.Session, string) (business.OrderDetail, error)
+	CancelMatchOrder(context.Context, business.Config, business.Session, int64) error
+	RefundMatchOrder(context.Context, business.Config, business.Session, int64) error
 	Close()
 	Stock(context.Context, business.Config, business.Session, string) ([]byte, error)
 	RefreshWithLogin(context.Context, business.Config, string, business.Session, func(context.Context) (string, error), func(string, string), func(business.Session)) (business.Session, []business.Person, error)
