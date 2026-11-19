@@ -17,30 +17,33 @@ import (
 )
 
 type inventoryRun struct {
-	queryAt       time.Time
-	ctx           context.Context
-	cancel        context.CancelFunc
-	queryCancel   context.CancelFunc
-	business      *businessRun
-	status        string
-	message       string
-	queryError    string
-	target        time.Time
-	plan          *inventory.Plan
-	task          tasks.Task
-	catalog       tasks.Catalog
-	defaults      []inventory.Region
-	match         protocol.MatchConfig
-	people        []business.Person
-	orderPrepared bool
-	orderInFlight bool
-	orderDone     chan struct{}
-	order         *OrderRecord
-	stopRequested bool
-	manualPaused  string
-	retryAt       time.Time
-	early         bool
-	realtime      bool
+	simulationQueries int
+	simulated         bool
+	queryAt           time.Time
+	ctx               context.Context
+	cancel            context.CancelFunc
+	queryCancel       context.CancelFunc
+	business          *businessRun
+	status            string
+	message           string
+	queryError        string
+	buttonHint        string
+	target            time.Time
+	plan              *inventory.Plan
+	task              tasks.Task
+	catalog           tasks.Catalog
+	defaults          []inventory.Region
+	match             protocol.MatchConfig
+	people            []business.Person
+	orderPrepared     bool
+	orderInFlight     bool
+	orderDone         chan struct{}
+	order             *OrderRecord
+	stopRequested     bool
+	manualPaused      string
+	retryAt           time.Time
+	early             bool
+	realtime          bool
 }
 type ExecutionView struct {
 	Status  string          `json:"status"`
@@ -59,6 +62,8 @@ type InventoryView struct {
 	Now         time.Time               `json:"now"`
 	Runs        map[int64]ExecutionView `json:"runs"`
 	SaleStopped bool                    `json:"saleStopped"`
+	Simulation  SimulationSettings      `json:"simulation"`
+	DebugMode   bool                    `json:"debugMode"`
 }
 type inventoryState struct {
 	settings  inventory.Settings
@@ -83,6 +88,16 @@ func (s *Service) initInventory() error {
 	s.inventory.pending = map[int64]*orderAttempt{}
 	s.inventory.saleStops = map[string]bool{}
 	s.inventory.manual = map[int64]manualRunState{}
+	s.simulation = defaultSimulationSettings()
+	if raw, err := s.store.Get("simulation-settings.v1"); err != nil {
+		return err
+	} else if len(raw) > 0 {
+		s.simulation.OrderFailurePercents = nil
+		if json.Unmarshal(raw, &s.simulation) != nil || s.simulation.Validate() != nil {
+			return errors.New("模拟设置无效")
+		}
+		s.simulation = s.simulation.withOrderProbabilities()
+	}
 	raw, err := s.store.Get("inventory-settings.v1")
 	if err != nil {
 		return err
@@ -109,7 +124,7 @@ func (s *Service) InventoryView() (InventoryView, error) {
 	if err := s.requireTaskSession(); err != nil {
 		return InventoryView{}, err
 	}
-	out := InventoryView{Match: s.session.CurrentMatch, Settings: s.inventory.settings, ClockReady: s.inventory.synced, ClockError: s.inventory.syncError, OffsetMS: s.inventory.offset, Now: s.calibratedNowLocked(), Runs: map[int64]ExecutionView{}}
+	out := InventoryView{Match: s.session.CurrentMatch, Settings: s.inventory.settings, ClockReady: s.inventory.synced, ClockError: s.inventory.syncError, OffsetMS: s.inventory.offset, Now: s.calibratedNowLocked(), Runs: map[int64]ExecutionView{}, Simulation: s.simulation, DebugMode: s.debugMode}
 	if s.inventory.saleStops[out.Match.ID] {
 		out.SaleStopped = true
 	}
@@ -207,6 +222,9 @@ func (s *Service) requireInventoryStoppedLocked(id int64) error {
 	return nil
 }
 func (s *Service) validInventoryLocked(id int64, r *inventoryRun) bool {
+	if r.simulated {
+		return s.inventory.runs[id] == r && r.ctx.Err() == nil
+	}
 	if r.business != nil && !r.business.offlineSince.IsZero() && time.Since(r.business.offlineSince) >= 18*time.Hour {
 		return false
 	}
@@ -271,6 +289,14 @@ func (s *Service) startInventory(id int64, realtime bool) error {
 func (s *Service) startInventoryMode(id int64, realtime, maintenance bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.debugMode && s.simulation.Enabled {
+		return errors.New("模拟模式已开启，请使用任务卡片的模拟验收入口")
+	}
+	for _, run := range s.inventory.runs {
+		if run.simulated && s.inventoryActiveLocked(run.task.ID) {
+			return errors.New("请先停止模拟任务，再启动真实监控")
+		}
+	}
 	if maintenance {
 		if !s.maintenanceResume[id] {
 			return nil
@@ -512,6 +538,9 @@ func (s *Service) stageInventoryOrderLocked(id int64, r *inventoryRun) {
 func (s *Service) deliverInventoryLocked(source int64, regions []inventory.Region, at time.Time) {
 	// All receivers match the same immutable snapshot with their own conditions.
 	for id, r := range s.inventory.runs {
+		if origin := s.inventory.runs[source]; origin != nil && origin.simulated != r.simulated {
+			continue
+		}
 		if (r.status != "monitoring" && !(r.status == "waiting" && !s.calibratedNowLocked().Before(r.queryAt))) || !s.validInventoryLocked(id, r) {
 			continue
 		}
@@ -558,11 +587,17 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 		cfg, session := s.session.BusinessConfig, r.business.session
 		s.mu.Unlock()
 		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		raw, err := s.businessClient.Stock(s.taskNetworkContext(callCtx, id), cfg, session, r.match.ID)
+		var raw []byte
+		var err error
+		if r.simulated {
+			raw, err = s.simulationStock(callCtx, id)
+		} else {
+			raw, err = s.businessClient.Stock(s.taskNetworkContext(callCtx, id), cfg, session, r.match.ID)
+		}
 		cancel()
-		var regions []inventory.Region
+		var stock inventory.StockResponse
 		if err == nil {
-			regions, err = inventory.Parse(raw)
+			stock, err = inventory.ParseResponse(raw)
 		}
 		s.mu.Lock()
 		if !s.validInventoryLocked(id, r) || ctx.Err() != nil || r.plan != nil {
@@ -574,12 +609,35 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 				_ = s.tasks.AppendLog(id, "info", "库存查询已恢复")
 			}
 			r.queryError = ""
-			r.message = "暂无符合条件的库存"
-			// Zero snapshots do not produce notifications.
-			for _, region := range regions {
-				if region.Count > 0 {
-					s.deliverInventoryLocked(id, regions, s.calibratedNowLocked())
-					break
+			canPurchase := stock.ButtonStatusPresent && stock.ButtonStatus == 1
+			if canPurchase {
+				if r.buttonHint != "" {
+					_ = s.tasks.AppendLog(id, "info", "服务端按钮状态已恢复；继续监控库存")
+					r.buttonHint = ""
+				}
+				r.message = "暂无符合条件的库存"
+			} else {
+				if stock.ButtonText != "" && stock.ButtonText != r.buttonHint {
+					r.buttonHint = stock.ButtonText
+					_ = s.tasks.AppendLog(id, "warning", "服务端提示："+r.buttonHint+"；库存监控继续")
+				}
+				hint := r.buttonHint
+				if hint == "" {
+					if stock.ButtonStatusPresent {
+						hint = fmt.Sprintf("服务端按钮状态 %d", stock.ButtonStatus)
+					} else {
+						hint = "服务端未返回可购状态"
+					}
+				}
+				r.message = "服务端提示：" + hint + "；继续查询库存"
+			}
+			// The official client only enables purchase while the server button is active.
+			if canPurchase {
+				for _, region := range stock.Regions {
+					if region.Count > 0 {
+						s.deliverInventoryLocked(id, stock.Regions, s.calibratedNowLocked())
+						break
+					}
 				}
 			}
 		} else {

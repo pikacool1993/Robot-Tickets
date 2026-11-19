@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,9 +17,182 @@ import (
 	"robot/apps/local-agent/internal/inventory"
 	"robot/apps/local-agent/internal/store"
 	"robot/apps/local-agent/internal/tasks"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestNonPurchasableButtonDoesNotMatchOrNotifyUntilEnabled(t *testing.T) {
+	s, runs, _ := orderFixture(t, 2)
+	first, second := runs[0], runs[1]
+	first.plan, second.plan = nil, nil
+	first.early, second.early = true, true
+	first.status, second.status = "monitoring", "monitoring"
+	s.inventory.settings = inventory.Settings{QueryMinMS: 5, QueryMaxMS: 5, OrderMinMS: 4500, OrderMaxMS: 7500}
+	var calls atomic.Int32
+	checked := make(chan int32, 3)
+	s.businessClient = &stockStub{query: func(context.Context, business.Config, business.Session, string) ([]byte, error) {
+		call := calls.Add(1)
+		checked <- call
+		buttonFields := `"btn_text":""`
+		if call == 2 {
+			buttonFields = `"btn_status":0,"btn_text":"暂未开售"`
+		} else if call > 2 {
+			buttonFields = `"btn_status":1,"btn_text":"立即购买"`
+		}
+		return []byte(fmt.Sprintf(`{"code":1,%s,"data":[{"region":1,"list":[{"id":2,"estate":1,"name":"109","price":"100.00","usable_count":2}]}]}`, buttonFields)), nil
+	}}
+	s.inventory.wg.Add(1)
+	go func() { defer s.inventory.wg.Done(); s.pollInventory(first.task.ID, first, first.ctx, time.Now()) }()
+	select {
+	case <-checked:
+	case <-time.After(time.Second):
+		t.Fatal("first stock query did not run")
+	}
+	waitForHint := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(time.Second)
+		for {
+			s.mu.Lock()
+			waiting := first.plan == nil && second.plan == nil && first.status == "monitoring" && first.message == want
+			s.mu.Unlock()
+			if waiting {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("unexpected state while waiting for %q", want)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	waitForHint("服务端提示：服务端未返回可购状态；继续查询库存")
+	select {
+	case call := <-checked:
+		if call != 2 {
+			t.Fatalf("expected second stock response, got call %d", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("polling stopped after missing button status")
+	}
+	waitForHint("服务端提示：暂未开售；继续查询库存")
+	deadline := time.Now().Add(time.Second)
+	for {
+		s.mu.Lock()
+		matched := first.plan != nil && second.plan != nil
+		if matched && (first.status != "ready" || second.status != "ready" || first.plan.Source != "realtime" || second.plan.Source != "notification") {
+			s.mu.Unlock()
+			t.Fatal("enabled stock did not notify both matching tasks correctly")
+		}
+		s.mu.Unlock()
+		if matched {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("polling did not resume and notify tasks after purchase button enabled")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestInventoryPollingStateMatrixAndChangeOnlyLogs(t *testing.T) {
+	s, runs, _ := orderFixture(t, 2)
+	first, second := runs[0], runs[1]
+	for _, r := range runs {
+		r.plan = nil
+		r.early = true
+		r.status = "monitoring"
+	}
+	s.inventory.settings = inventory.Settings{QueryMinMS: 5, QueryMaxMS: 5, OrderMinMS: 4500, OrderMaxMS: 7500}
+	var calls atomic.Int32
+	checked := make(chan struct{}, 8)
+	s.businessClient = &stockStub{query: func(context.Context, business.Config, business.Session, string) ([]byte, error) {
+		n := calls.Add(1)
+		checked <- struct{}{}
+		switch n {
+		case 1:
+			return []byte(`{"code":1,"btn_status":1,"btn_text":"立即购买","data":[]}`), nil
+		case 2, 3:
+			return nil, errors.New("synthetic network failure")
+		case 4, 5:
+			return nil, &business.APIError{HTTP: 200, Code: 996}
+		case 6:
+			return []byte(`{"code":1,"btn_status":1,"btn_text":"立即购买","data":[]}`), nil
+		default:
+			return []byte(`{"code":1,"btn_status":1,"btn_text":"立即购买","data":[{"region":1,"list":[{"id":2,"estate":1,"name":"109","price":"100.00","usable_count":2}]}]}`), nil
+		}
+	}}
+	s.inventory.wg.Add(1)
+	go func() { defer s.inventory.wg.Done(); s.pollInventory(first.task.ID, first, first.ctx, time.Now()) }()
+	awaitQuery := func(n int32) {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for calls.Load() < n {
+			select {
+			case <-checked:
+			case <-deadline:
+				t.Fatalf("inventory query %d did not run", n)
+			}
+		}
+	}
+	awaitMessage := func(message string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			s.mu.Lock()
+			ready := first.message == message
+			s.mu.Unlock()
+			if ready {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("inventory state did not become %q", message)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	awaitQuery(1)
+	awaitMessage("暂无符合条件的库存")
+	s.mu.Lock()
+	if first.status != "monitoring" || first.plan != nil || second.plan != nil || first.message != "暂无符合条件的库存" {
+		s.mu.Unlock()
+		t.Fatal("empty successful response changed the monitoring state")
+	}
+	s.mu.Unlock()
+	awaitQuery(2)
+	awaitQuery(3)
+	awaitQuery(4)
+	awaitQuery(5)
+	awaitQuery(6)
+	awaitQuery(7)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		matched := first.plan != nil && second.plan != nil
+		correct := first.status == "ready" && second.status == "ready" && first.plan != nil && second.plan != nil && first.plan.Source == "realtime" && second.plan.Source == "notification"
+		s.mu.Unlock()
+		if matched {
+			if !correct {
+				t.Fatal("stock hit did not notify and stage matching runs")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("matching inventory did not stage orders")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	logs := s.tasks.Snapshot().Tasks[0].Logs
+	counts := map[string]int{}
+	for _, entry := range logs {
+		counts[entry.Text]++
+	}
+	if counts["库存查询异常，按配置间隔继续查询（不表示零库存）"] != 1 || counts["库存查询异常（HTTP 200，业务码 996），按配置间隔继续查询"] != 1 || counts["库存查询已恢复"] != 1 {
+		t.Fatalf("query state transitions were not logged once: %+v", counts)
+	}
+	if counts["库存匹配成功：1人，来源 realtime"] != 1 {
+		t.Fatalf("stock hit log missing: %+v", counts)
+	}
+}
 
 func TestInventoryQueryErrorsDoNotPauseOrCancelDeadline(t *testing.T) {
 	db, err := store.Open(t.TempDir())

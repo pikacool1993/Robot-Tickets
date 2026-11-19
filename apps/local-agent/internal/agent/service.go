@@ -68,6 +68,8 @@ type Service struct {
 	tasks             *tasks.Service
 	protocols         protocolRuntime
 	maintenanceResume map[int64]bool
+	debugMode         bool
+	simulation        SimulationSettings
 }
 
 func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed25519.PublicKey, logger *slog.Logger) (*Service, error) {

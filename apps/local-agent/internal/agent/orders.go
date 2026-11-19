@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
 	"robot/apps/local-agent/internal/business"
 	"robot/apps/local-agent/internal/inventory"
@@ -26,6 +27,7 @@ type OrderViewer struct {
 	Phone string `json:"phone"`
 }
 type OrderRecord struct {
+	Simulated   bool                 `json:"simulated,omitempty"`
 	Account     string               `json:"account"`
 	UserID      string               `json:"userId"`
 	ID          string               `json:"id"`
@@ -40,6 +42,7 @@ type OrderRecord struct {
 	DetailError string               `json:"detailError,omitempty"`
 }
 type OrderDisplay struct {
+	Simulated   bool                 `json:"simulated,omitempty"`
 	ID          string               `json:"id"`
 	TaskID      int64                `json:"taskId"`
 	Match       protocol.MatchConfig `json:"match"`
@@ -190,7 +193,7 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 		s.mu.Unlock()
 		return true
 	}
-	if s.orderClient == nil {
+	if s.orderClient == nil && !r.simulated {
 		r.status, r.message = "order_review", "下单服务不可用（未发送订单）"
 		s.mu.Unlock()
 		return true
@@ -203,10 +206,32 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 	r.orderPrepared, r.orderInFlight, r.status, r.message = true, true, "submitting", "正在创建订单"
 	r.orderDone = make(chan struct{})
 	r.stopRequested = false
+	if s.debugMode {
+		if raw, marshalErr := json.Marshal(request); marshalErr == nil {
+			requestLabel := "N5"
+			if r.simulated {
+				requestLabel = "模拟验收拦截 N5（未发送）"
+			}
+			for _, message := range []string{
+				"[DEBUG] " + requestLabel + " POST 下单请求链接：" + business.N5 + path,
+				"[DEBUG] " + requestLabel + " POST 下单请求参数：" + string(raw),
+			} {
+				if err := s.tasks.AppendLog(id, "debug", message); err != nil && s.log != nil {
+					s.log.Warn("order request task log persistence failed", "task_id", id)
+				}
+			}
+		}
+	}
 	_ = s.tasks.AppendLog(id, "info", r.message)
 	s.mu.Unlock()
 	callCtx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
-	result, sendErr := sender.CreateOrder(s.taskNetworkContext(callCtx, id), cfg, session, path, request)
+	var result business.OrderResult
+	var sendErr error
+	if r.simulated {
+		result, sendErr = s.simulationOrder(callCtx, id)
+	} else {
+		result, sendErr = sender.CreateOrder(s.taskNetworkContext(callCtx, id), cfg, session, path, request)
+	}
 	cancel()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -302,6 +327,16 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 func (s *Service) saveCreatedOrderLocked(id int64, r *inventoryRun, p inventory.Plan, orderID, token string, viewers []OrderViewer) {
 	p.Parts = append([]inventory.Allocation{}, p.Parts...)
 	record := &OrderRecord{Account: r.business.binding.Protocol + ":" + r.business.binding.Account.Ref, UserID: r.business.session.UserID, ID: orderID, TaskID: id, Match: r.match, ViewerIDs: append([]string{}, r.task.PeopleSelected...), Viewers: append([]OrderViewer{}, viewers...), Plan: p, CreatedAt: s.calibratedNowLocked(), Token: token}
+	if r.simulated {
+		record.Simulated, record.Account, record.Token = true, "simulation", "LOCAL-SIMULATION"
+		record.Details = simulatedOrderDetail(orderID, viewers, p, time.Now())
+		if rand.Intn(100) < s.simulation.PaidOrderPercent {
+			record.Details.Status, record.Details.Payed = 6, record.Details.Payable
+			for i := range record.Details.Bill {
+				record.Details.Bill[i].Status = 6
+			}
+		}
+	}
 	r.order = record
 	if s.store != nil {
 		if s.inventory.orders == nil {
@@ -334,7 +369,7 @@ func (s *Service) GetOrderHistory() ([]OrderDisplay, error) {
 	}
 	items := make([]OrderDisplay, 0, len(s.inventory.orders))
 	for _, record := range s.inventory.orders {
-		copy := OrderDisplay{ID: record.ID, TaskID: record.TaskID, Match: record.Match, Plan: record.Plan, CreatedAt: record.CreatedAt, Details: record.Details, DetailError: record.DetailError}
+		copy := OrderDisplay{ID: record.ID, TaskID: record.TaskID, Match: record.Match, Plan: record.Plan, CreatedAt: record.CreatedAt, Details: record.Details, DetailError: record.DetailError, Simulated: record.Simulated}
 		copy.ViewerIDs = append([]string{}, record.ViewerIDs...)
 		copy.Viewers = append([]OrderViewer{}, record.Viewers...)
 		for i := range copy.Viewers {
@@ -368,8 +403,27 @@ func (s *Service) persistOrderDetailLocked(record *OrderRecord, key string, deta
 	return nil
 }
 func (s *Service) refreshOrderDetail(cfg business.Config, record *OrderRecord) error {
-	if record == nil || s.businessClient == nil {
+	if record == nil {
 		return errors.New("订单记录不存在")
+	}
+	if record.Simulated {
+		operationErr := s.simulationOperation(s.ctx, record.TaskID, "query")
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		current, key := s.findOrderLocked(record.TaskID, record.ID)
+		if current == nil {
+			return errors.New("订单记录不存在")
+		}
+		if operationErr != nil {
+			current.DetailError = operationErr.Error()
+			raw, _ := json.Marshal(current)
+			_ = s.store.Put(key, raw)
+			return operationErr
+		}
+		return s.persistOrderDetailLocked(current, key, current.Details, "")
+	}
+	if s.businessClient == nil {
+		return errors.New("订单服务不可用")
 	}
 	detail, err := s.businessClient.MatchOrderInfo(s.ctx, cfg, business.Session{Token: record.Token, UserID: record.UserID}, record.ID)
 	s.mu.Lock()
@@ -398,6 +452,10 @@ func (s *Service) RefreshOrderDetail(taskID int64, id string) error {
 		return errors.New("订单记录不存在")
 	}
 	copy := *record
+	if copy.Simulated {
+		s.mu.Unlock()
+		return s.refreshOrderDetail(business.Config{}, &copy)
+	}
 	cfg := s.session.BusinessConfig
 	s.mu.Unlock()
 	return s.refreshOrderDetail(cfg, &copy)
@@ -426,6 +484,45 @@ func (s *Service) OrderAfterSale(taskID int64, id, action string) error {
 	}
 	s.orderActions[key] = true
 	copy := *record
+	if copy.Simulated {
+		s.mu.Unlock()
+		defer func() { s.mu.Lock(); delete(s.orderActions, key); s.mu.Unlock() }()
+		if err := s.refreshOrderDetail(business.Config{}, &copy); err != nil {
+			return err
+		}
+		if err := s.simulationOperation(s.ctx, taskID, action); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		current, _ := s.findOrderLocked(taskID, id)
+		if current == nil {
+			s.mu.Unlock()
+			return errors.New("订单记录不存在")
+		}
+		copy = *current
+		s.mu.Unlock()
+		if action == "cancel" && copy.Details.Status == 5 {
+			copy.Details.Status = 4
+		} else if action == "refund" && copy.Details.Status == 6 && copy.Details.PayType == "微信支付" && copy.Details.RefundEnabled {
+			copy.Details.Status = 3
+			copy.Details.Refund = copy.Details.Payable
+			copy.Details.RefundEnabled = false
+			copy.Details.Refunded = append([]business.OrderTicket{}, copy.Details.Bill...)
+			for i := range copy.Details.Refunded {
+				copy.Details.Refunded[i].Status = 3
+			}
+			copy.Details.Bill = []business.OrderTicket{}
+		} else {
+			return errors.New("模拟订单当前状态不符合操作条件")
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		current, orderKey := s.findOrderLocked(taskID, id)
+		if current == nil {
+			return errors.New("订单记录不存在")
+		}
+		return s.persistOrderDetailLocked(&copy, orderKey, copy.Details, "")
+	}
 	cfg := s.session.BusinessConfig
 	s.mu.Unlock()
 	defer func() {
@@ -525,9 +622,9 @@ func (s *Service) RecoverInventory(id int64, action string) error {
 	delete(s.inventory.manual, id)
 	delete(s.inventory.pending, id)
 	r.status, r.message, r.manualPaused = "stopped", "已停止", ""
-	_ = s.tasks.AppendLog(id, "info", "代理商人工确认后恢复实时库存监控")
+	_ = s.tasks.AppendLog(id, "info", "代理商已解除任务暂停；任务保持停止，需再次点击启动才恢复库存监控")
 	s.mu.Unlock()
-	return s.startInventory(id, true)
+	return nil
 }
 
 func (s *Service) PrepareRepurchase(id int64, viewerIDs, seats []string, mode string) error {

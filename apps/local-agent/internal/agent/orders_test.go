@@ -123,7 +123,7 @@ func TestOrderFailureWaitsThenQueriesAndRematches(t *testing.T) {
 		}
 		queries.Add(1)
 		queriedAt <- time.Now()
-		return []byte(`{"code":1,"data":[{"region":1,"list":[{"id":2,"estate":2,"name":"109","price":"100.00","usable_count":2}]}]}`), nil
+		return []byte(`{"code":1,"btn_status":1,"btn_text":"立即购买","data":[{"region":1,"list":[{"id":2,"estate":2,"name":"109","price":"100.00","usable_count":2}]}]}`), nil
 	}}
 	s.orderClient = orderSenderFunc(func(ctx context.Context, _ business.Config, session business.Session, path string, b any) (business.OrderResult, error) {
 		req := b.(orders.Request)
@@ -175,6 +175,70 @@ func TestOrderFailureWaitsThenQueriesAndRematches(t *testing.T) {
 	if json.Unmarshal(raw, &record) != nil || record.Viewers[0].ID != "12" || record.Plan.Parts[0].Region.Estate != 2 {
 		t.Fatal("incomplete order record")
 	}
+}
+
+func TestDebugOrderRequestIsWrittenToTaskLog(t *testing.T) {
+	s, runs, key := orderFixture(t, 1)
+	r := runs[0]
+	s.debugMode = true
+	var sentPath string
+	var sentBody orders.Request
+	s.orderClient = orderSenderFunc(func(_ context.Context, _ business.Config, _ business.Session, path string, body any) (business.OrderResult, error) {
+		sentPath = path
+		sentBody = body.(orders.Request)
+		return business.OrderResult{Code: 1, OrderID: "34726"}, nil
+	})
+
+	s.submitInventoryOrder(r.ctx, r.task.ID, r, key)
+
+	encoded, err := json.Marshal(sentBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []tasks.Log
+	for _, task := range s.tasks.Snapshot().Tasks {
+		if task.ID == r.task.ID {
+			logs = task.Logs
+			break
+		}
+	}
+	linkFound, paramsFound := false, false
+	for _, entry := range logs {
+		linkFound = linkFound || strings.Contains(entry.Text, "[DEBUG] N5 POST 下单请求链接："+business.N5+sentPath)
+		paramsFound = paramsFound || strings.Contains(entry.Text, "[DEBUG] N5 POST 下单请求参数："+string(encoded))
+	}
+	if !linkFound || !paramsFound {
+		t.Fatalf("debug task log missing completed request link or exact body: link=%t params=%t", linkFound, paramsFound)
+	}
+	var combined strings.Builder
+	for _, entry := range logs {
+		combined.WriteString(entry.Text)
+		combined.WriteByte('\n')
+	}
+	if strings.Contains(combined.String(), r.business.session.Token) {
+		t.Fatal("business authorization token must not be written to task logs")
+	}
+}
+
+func TestOrderRequestDetailsOmittedWhenDebugIsDisabled(t *testing.T) {
+	s, runs, key := orderFixture(t, 1)
+	r := runs[0]
+	s.orderClient = orderSenderFunc(func(context.Context, business.Config, business.Session, string, any) (business.OrderResult, error) {
+		return business.OrderResult{Code: 1, OrderID: "34726"}, nil
+	})
+	s.submitInventoryOrder(r.ctx, r.task.ID, r, key)
+	for _, task := range s.tasks.Snapshot().Tasks {
+		if task.ID != r.task.ID {
+			continue
+		}
+		for _, entry := range task.Logs {
+			if strings.Contains(entry.Text, "N5 POST 下单请求链接") || strings.Contains(entry.Text, "N5 POST 下单请求参数") {
+				t.Fatal("request details must not be logged when DEBUG is disabled")
+			}
+		}
+		return
+	}
+	t.Fatal("task missing from task log snapshot")
 }
 
 func TestOrderInFlightIsPerTaskAndSingleSubmission(t *testing.T) {
@@ -321,7 +385,7 @@ func TestUnknownOrderResumesPollingAfterFullDelay(t *testing.T) {
 		case queried <- time.Now():
 		default:
 		}
-		return []byte(`{"code":1,"data":[]}`), nil
+		return []byte(`{"code":1,"btn_status":1,"btn_text":"立即购买","data":[]}`), nil
 	}}
 	s.orderClient = orderSenderFunc(func(context.Context, business.Config, business.Session, string, any) (business.OrderResult, error) {
 		return business.OrderResult{}, context.DeadlineExceeded
@@ -343,6 +407,53 @@ func TestUnknownOrderResumesPollingAfterFullDelay(t *testing.T) {
 	s.stopInventoryLocked(r.task.ID, "stopped", "已停止")
 	s.mu.Unlock()
 	s.inventory.wg.Wait()
+}
+
+func TestSimulatedOrderRefreshCancelAndRefundNeverUseOfficialClient(t *testing.T) {
+	s, runs, _ := orderFixture(t, 1)
+	r := runs[0]
+	now := time.Now()
+	viewer := OrderViewer{ID: "12", Name: "test-viewer", Phone: "13800000000"}
+	plan := inventory.Plan{MatchID: "101", Parts: []inventory.Allocation{{Region: inventory.Region{Group: 1, Estate: 1, Name: "109", Price: "100.00"}, Quantity: 1}}}
+	s.inventory.orders = map[string]*OrderRecord{}
+	for _, test := range []struct {
+		id     string
+		status int
+		action string
+		want   int
+	}{{"SIM-cancel", 5, "cancel", 4}, {"SIM-refund", 6, "refund", 3}} {
+		detail := simulatedOrderDetail(test.id, []OrderViewer{viewer}, plan, now)
+		detail.Status = test.status
+		if test.status == 6 {
+			detail.Payed = detail.Payable
+		}
+		record := &OrderRecord{Simulated: true, ID: test.id, TaskID: r.task.ID, UserID: "1", Token: "LOCAL-SIMULATION", Match: r.match, ViewerIDs: []string{"12"}, Viewers: []OrderViewer{viewer}, Plan: plan, CreatedAt: now, Details: detail}
+		key := fmt.Sprintf("created-order.v1.%d.%s", r.task.ID, test.id)
+		raw, _ := json.Marshal(record)
+		if err := s.store.Put(key, raw); err != nil {
+			t.Fatal(err)
+		}
+		s.inventory.orders[key] = record
+		if err := s.RefreshOrderDetail(r.task.ID, test.id); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.OrderAfterSale(r.task.ID, test.id, test.action); err != nil {
+			t.Fatal(err)
+		}
+		items, err := s.GetOrderHistory()
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, item := range items {
+			if item.ID == test.id {
+				found = item.Simulated && item.Details.Status == test.want
+			}
+		}
+		if !found {
+			t.Fatalf("simulated %s flow not persisted", test.action)
+		}
+	}
 }
 
 func TestStopCancelsOrderCooldown(t *testing.T) {

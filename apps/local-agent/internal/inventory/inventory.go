@@ -57,7 +57,7 @@ func (r Region) Key() string {
 
 type Snapshot struct {
 	Code         int    `json:"code"`
-	ButtonStatus int    `json:"btn_status"`
+	ButtonStatus *int   `json:"btn_status"`
 	ButtonText   string `json:"btn_text"`
 	MaxNum       int    `json:"max_num"`
 	TypeCode     int    `json:"type_code"`
@@ -72,6 +72,12 @@ type Snapshot struct {
 		} `json:"list"`
 	} `json:"data"`
 }
+type StockResponse struct {
+	ButtonStatus        int
+	ButtonStatusPresent bool
+	ButtonText          string
+	Regions             []Region
+}
 type Allocation struct {
 	Region   Region `json:"region"`
 	Quantity int    `json:"quantity"`
@@ -84,9 +90,17 @@ type Plan struct {
 }
 
 func Parse(raw []byte) ([]Region, error) {
+	response, err := ParseResponse(raw)
+	if err != nil {
+		return nil, err
+	}
+	return response.Regions, nil
+}
+
+func ParseResponse(raw []byte) (StockResponse, error) {
 	var s Snapshot
 	if len(raw) > 2<<20 || json.Unmarshal(raw, &s) != nil || s.Code != 1 || s.Data == nil {
-		return nil, errors.New("票区响应格式或业务状态无效")
+		return StockResponse{}, errors.New("票区响应格式或业务状态无效")
 	}
 	regions := []Region{}
 	seen := map[string]bool{}
@@ -95,13 +109,17 @@ func Parse(raw []byte) ([]Region, error) {
 			r := Region{Group: g.Region, ID: a.ID, Estate: a.Estate, Name: strings.TrimSpace(a.Name), Price: a.Price, Count: a.Count}
 			price, err := strconv.ParseFloat(r.Price, 64)
 			if r.Name == "" || r.ID <= 0 || r.Group <= 0 || r.Count < 0 || r.Count > 1000000000 || err != nil || math.IsNaN(price) || math.IsInf(price, 0) || price < 0 || price > 1000000 || seen[r.Key()] {
-				return nil, errors.New("票区字段无效或重复")
+				return StockResponse{}, errors.New("票区字段无效或重复")
 			}
 			seen[r.Key()] = true
 			regions = append(regions, r)
 		}
 	}
-	return regions, nil
+	buttonStatus := 1
+	if s.ButtonStatus != nil {
+		buttonStatus = *s.ButtonStatus
+	}
+	return StockResponse{ButtonStatus: buttonStatus, ButtonStatusPresent: s.ButtonStatus != nil, ButtonText: strings.TrimSpace(s.ButtonText), Regions: regions}, nil
 }
 func Candidates(regions []Region, c tasks.Catalog, t tasks.Task) []Region {
 	allowed := map[string]string{}

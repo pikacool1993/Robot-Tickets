@@ -245,7 +245,7 @@ func TestRepurchaseSavesStoppedRoundAndKeepsHistory(t *testing.T) {
 	_ = s.StopInventory(r.task.ID)
 }
 
-func TestManualRecoveryAlwaysQueriesRealtime(t *testing.T) {
+func TestManualRecoveryReturnsToStoppedState(t *testing.T) {
 	s, runs, _ := orderFixture(t, 1)
 	r := runs[0]
 	configureLifecycleTask(t, s, r)
@@ -259,13 +259,24 @@ func TestManualRecoveryAlwaysQueriesRealtime(t *testing.T) {
 	}
 	s.mu.Lock()
 	current := s.inventory.runs[r.task.ID]
-	early := current.early
-	queryAt := current.queryAt
+	status := current.status
 	s.mu.Unlock()
-	if early || queryAt.After(time.Now().Add(time.Second)) || len(s.inventory.pending) != 0 {
-		t.Fatal("recovery reused initial window or retained marker")
+	if status != "stopped" || len(s.inventory.pending) != 0 {
+		t.Fatal("recovery should clear marker and remain stopped")
 	}
-	_ = s.StopInventory(r.task.ID)
+}
+
+func TestBlockedRecoveryReturnsToStoppedState(t *testing.T) {
+	s, runs, _ := orderFixture(t, 1)
+	r := runs[0]
+	configureLifecycleTask(t, s, r)
+	r.status = "order_blocked"
+	if err := s.RecoverInventory(r.task.ID, "resolved"); err != nil {
+		t.Fatal(err)
+	}
+	if r.status != "stopped" {
+		t.Fatalf("expected stopped state after recovery, got %s", r.status)
+	}
 }
 
 func TestMaintenanceIntentAndSaleStopPersistence(t *testing.T) {

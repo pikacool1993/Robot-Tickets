@@ -128,6 +128,23 @@ func TestParseRealDefaultAndInvalidCounts(t *testing.T) {
 		t.Fatal("unsupported inventory success code accepted")
 	}
 }
+func TestParseResponseKeepsButtonHintWithoutRejectingStock(t *testing.T) {
+	raw := []byte(`{"code":1,"btn_status":0,"btn_text":"暂未开售","data":[{"region":1,"list":[{"id":3,"estate":2,"name":"VIP1","price":"1288.00","usable_count":4}]}]}`)
+	response, err := ParseResponse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.ButtonStatusPresent || response.ButtonStatus != 0 || response.ButtonText != "暂未开售" || len(response.Regions) != 1 || response.Regions[0].Count != 4 {
+		t.Fatalf("button hint or inventory lost: %+v", response)
+	}
+	missingStatus, err := ParseResponse([]byte(`{"code":1,"btn_text":"暂未开售","data":[]}`))
+	if err != nil || missingStatus.ButtonStatusPresent {
+		t.Fatalf("missing button status was treated as explicit: %+v %v", missingStatus, err)
+	}
+	if _, err := ParseResponse([]byte(`{"code":200,"btn_status":1,"data":[]}`)); err == nil {
+		t.Fatal("non-1 inventory success code accepted")
+	}
+}
 func TestScheduleWindowBoundaries(t *testing.T) {
 	sale := time.Date(2026, 11, 13, 6, 0, 0, 0, time.UTC)
 	s := Defaults()

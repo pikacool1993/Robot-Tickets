@@ -159,12 +159,13 @@ func main() {
 		fatal("客户端初始化失败")
 	}
 	defer service.Close()
+	service.SetDebugMode(os.Getenv("ROBOT_DEBUG") == "1")
 	if err := service.EnableProtocols(); err != nil {
 		fatal("协议服务配置无法读取，请检查本地数据")
 	}
 	app := &App{service: service}
 	lockID := fmt.Sprintf("robot-agent-%x", sha256.Sum256([]byte(strings.ToLower(root))))
-	err = wails.Run(&options.App{Title: "Robot · 本地客户端", Width: 1280, Height: 720, MinWidth: 1280, MinHeight: 720, BackgroundColour: options.NewRGB(23, 30, 41), AssetServer: &assetserver.Options{Assets: assets}, OnStartup: app.startup, OnBeforeClose: app.beforeClose, Bind: []interface{}{app}, SingleInstanceLock: &options.SingleInstanceLock{UniqueId: lockID, OnSecondInstanceLaunch: func(_ options.SecondInstanceData) { app.focus() }}, Windows: &windows.Options{WebviewUserDataPath: filepath.Join(dataDir, "webview"), Theme: windows.Dark}})
+	err = wails.Run(&options.App{Title: "Robot · 本地客户端", Width: 1600, Height: 960, MinWidth: 1280, MinHeight: 720, BackgroundColour: options.NewRGB(23, 30, 41), AssetServer: &assetserver.Options{Assets: assets}, OnStartup: app.startup, OnBeforeClose: app.beforeClose, Bind: []interface{}{app}, SingleInstanceLock: &options.SingleInstanceLock{UniqueId: lockID, OnSecondInstanceLaunch: func(_ options.SecondInstanceData) { app.focus() }}, Windows: &windows.Options{WebviewUserDataPath: filepath.Join(dataDir, "webview"), Theme: windows.Dark}})
 	if err != nil {
 		logger.Error("desktop runtime failed")
 		fatal("桌面窗口启动失败，请检查 WebView2 是否正确安装")
@@ -228,6 +229,11 @@ func (a *App) PrepareRepurchase(id int64, viewerIDs, seats []string, mode string
 func (a *App) SaveInventorySettings(v inventory.Settings) error {
 	return a.service.SaveInventorySettings(v)
 }
+func (a *App) SimulationSettings() agent.SimulationSettings { return a.service.SimulationSettings() }
+func (a *App) SaveSimulationSettings(v agent.SimulationSettings) error {
+	return a.service.SaveSimulationSettings(v)
+}
+func (a *App) StartSimulation(id int64) error           { return a.service.StartSimulation(id) }
 func (a *App) SyncInventoryClock() error                { return a.service.SyncInventoryClock() }
 func (a *App) StartInventory(id int64) error            { return a.service.StartInventory(id) }
 func (a *App) StopInventory(id int64) error             { return a.service.StopInventory(id) }

@@ -7,7 +7,7 @@ defineEmits<{ logout: [] }>()
 // Register new client features here as their pages become available.
 const navigation = [{ id: 'tasks', label: '任务', description: '账号配置与任务管理' }, { id: 'orders', label: '订单', description: '订单汇总与售后操作' }] as const
 const activePage = ref<'tasks' | 'orders'>('tasks')
-const collapsed = ref(true)
+const collapsed = ref(false)
 const currentPage = computed(() => navigation.find(item => item.id === activePage.value) || navigation[0])
 </script>
 
