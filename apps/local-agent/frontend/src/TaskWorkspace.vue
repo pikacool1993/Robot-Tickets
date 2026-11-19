@@ -143,6 +143,7 @@ watch(() => props.page, page => { if (page === 'orders') { orderSearch.value='';
 const view = ref<TaskView>({ catalog: { stadium: '', tiers: [] }, configError: '', tasks: [] })
 const error = ref(''), loading = ref(true), creating = ref(false), saving = ref(false), saveError = ref('')
 const readError = ref('')
+const inventoryNotice = ref('')
 const retryingRead = ref(false)
 const protocol = ref<ProtocolStatus | null>(null), attempt = ref<AuthAttempt | null>(null), protocolBusy = ref(false), controlAction = ref(''), protocolError = ref('')
 const controlDialog = ref<HTMLDialogElement | null>(null), now = ref(Date.now())
@@ -383,6 +384,26 @@ async function deleteTask() {
 
 <template>
   <main class="tw" aria-label="任务工作台">
+    <Teleport to="body">
+      <div v-show="props.page === 'tasks'" class="task-toast-stack" role="region" aria-label="任务通知">
+        <TaskToast v-if="!retryingRead" :message="readError" warning>
+          <template #actions><button type="button" class="tw-toast-retry" @click="retryRead">重试读取</button></template>
+        </TaskToast>
+        <TaskToast :message="error" warning />
+        <TaskToast :message="view.configError" warning />
+        <TaskToast :message="state.notice || ''" />
+        <TaskToast :message="inventoryNotice" warning />
+        <TaskToast
+          :message="bulkAction ? `${bulkLabels[bulkAction]} ${bulkDone} / ${bulkTotal}…` : bulkReport"
+          :pending="!!bulkAction"
+          :warning="!bulkAction && bulkErrors.length > 0"
+        >
+          <div v-if="!bulkAction && bulkErrors.length" class="tw-toast-details">
+            <div v-for="(message, index) in bulkErrors" :key="index">{{ message }}</div>
+          </div>
+        </TaskToast>
+      </div>
+    </Teleport>
     <Teleport defer to="#client-sidebar-protocol">
       <section class="tw-service sidebar-service" aria-label="协议服务">
         <div><strong>{{ props.state.authProtocol === 'yyb' ? 'YYB' : '微信' }}协议</strong><span class="sidebar-service-status" :data-state="protocol?.state" role="status">{{ serviceLabels[protocol?.state || ''] || '检查中' }}</span><small>{{ protocol?.address }} · {{ protocol?.proxy || '直连' }}</small></div>
@@ -396,9 +417,9 @@ async function deleteTask() {
       </Teleport>
     <section v-if="props.page === 'tasks'" class="tw-body">
       <section class="tw-task-controls" aria-label="任务操作">
-      <InventoryPanel :stadium="view.catalog.stadium" @update="inventoryView = $event">
+      <InventoryPanel :stadium="view.catalog.stadium" @update="inventoryView = $event" @notice="inventoryNotice = $event">
         <template #title><h1>任务 <span class="tw-task-count">{{ view.tasks.length }}</span></h1></template>
-        <template #toolbar="{ openSettings, settingsDisabled, inventoryNotice }">
+        <template #toolbar="{ openSettings, settingsDisabled }">
           <div class="tw-toolbar" role="search" aria-label="任务搜索">
             <div class="tw-search"><input v-model="search" type="search" aria-label="搜索任务" placeholder="搜索任务" title="支持搜索任务编号、微信昵称、备注或观演人" autocomplete="off" :disabled="loading" @input="tip = null"/><button v-if="search" class="tw-search-clear" type="button" aria-label="清空搜索" @click="search = ''; tip = null">清空</button></div>
             <div class="tw-task-actions" role="group" aria-label="任务批量操作" title="批量操作作用于当前客户端的全部任务，不受搜索过滤影响">
@@ -410,26 +431,6 @@ async function deleteTask() {
               <button :disabled="settingsDisabled || !!bulkAction" aria-haspopup="dialog" @click="openSettings()">设置</button>
             </div>
           </div>
-          <Teleport to="body">
-            <div class="task-toast-stack" role="region" aria-label="任务通知">
-              <TaskToast v-if="!retryingRead" :message="readError" warning>
-                <template #actions><button type="button" class="tw-toast-retry" @click="retryRead">重试读取</button></template>
-              </TaskToast>
-              <TaskToast :message="error" warning />
-              <TaskToast :message="view.configError" warning />
-              <TaskToast :message="state.notice || ''" />
-              <TaskToast :message="inventoryNotice" warning />
-              <TaskToast
-                :message="bulkAction ? `${bulkLabels[bulkAction]} ${bulkDone} / ${bulkTotal}…` : bulkReport"
-                :pending="!!bulkAction"
-                :warning="!bulkAction && bulkErrors.length > 0"
-              >
-                <div v-if="!bulkAction && bulkErrors.length" class="tw-toast-details">
-                  <div v-for="(message, index) in bulkErrors" :key="index">{{ message }}</div>
-                </div>
-              </TaskToast>
-            </div>
-          </Teleport>
         </template>
       </InventoryPanel>
       </section>
@@ -671,7 +672,7 @@ async function deleteTask() {
 </style>
 
 <style scoped>
-.sidebar-service{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:16px;margin:0;padding:0 8px 22px;border:0;border-bottom:1px solid var(--app-line);border-radius:0;background:transparent;color:var(--app-ink);font-size:12px}.sidebar-service>div:first-child{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.sidebar-service strong{font-size:13px;font-weight:600}.sidebar-service>div:first-child>span{margin-left:auto;font-size:11px;color:var(--app-success);background:#9bcaac12;border:1px solid #9bcaac30;border-radius:4px;padding:2px 6px}.sidebar-service small{flex-basis:100%;font-size:10px;line-height:1.7;overflow-wrap:anywhere;color:var(--app-muted)}.sidebar-service>div:nth-child(2){display:grid;grid-template-columns:1fr 1fr;gap:8px}.sidebar-service button{font:inherit;font-size:11px;padding:8px 4px;border:1px solid var(--app-line);border-radius:5px;background:var(--app-soft);color:var(--app-ink)}.sidebar-service button:first-child{grid-column:1/-1}.sidebar-service button:hover:enabled{border-color:var(--app-accent);color:var(--app-accent)}.sidebar-service p{font-size:11px;line-height:1.6;margin:0;color:var(--app-warning)}
+.sidebar-service{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:8px;margin:0;padding:0;border:0;border-radius:0;background:transparent;color:var(--app-ink);font-size:12px}.sidebar-service>div:first-child{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.sidebar-service strong{font-size:13px;font-weight:600}.sidebar-service>div:first-child>span{margin-left:auto;font-size:11px;color:var(--app-success);background:#9bcaac12;border:1px solid #9bcaac30;border-radius:4px;padding:2px 6px}.sidebar-service small{flex-basis:100%;font-size:11px;line-height:1.7;overflow-wrap:anywhere;color:var(--app-muted)}.sidebar-service>div:nth-child(2){display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.sidebar-service button{font:inherit;font-size:11px;padding:6px 3px;border:1px solid var(--app-line);border-radius:5px;background:var(--app-soft);color:var(--app-ink)}.sidebar-service button{min-width:0}.sidebar-service button:hover:enabled{border-color:var(--app-accent);color:var(--app-accent)}.sidebar-service p{font-size:11px;line-height:1.6;margin:0;color:var(--app-warning)}
 </style>
 
 <style scoped>

@@ -2,8 +2,9 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { backend, type InventoryView, type InventorySettings } from './bridge'
 import TaskToast from './TaskToast.vue'
+import { watch } from 'vue'
 defineProps<{ stadium?: string }>()
-const emit = defineEmits<{ update: [value: InventoryView] }>()
+const emit = defineEmits<{ update: [value: InventoryView]; notice: [value: string] }>()
 const view = ref<InventoryView | null>(null), error = ref(''), loadError = ref(''), busy = ref(false)
 const modal = ref<'details' | 'settings' | null>(null), dialog = ref<HTMLDialogElement | null>(null)
 const settingsForm = ref<HTMLFormElement | null>(null)
@@ -40,6 +41,8 @@ const countdown = computed(() => {
 })
 const failure = (e: unknown) => String(e instanceof Error ? e.message : e)
 const inventoryNotice = computed(() => error.value || loadError.value || view.value?.clockError || view.value?.match.message || '')
+const taskNotice = computed(() => modal.value ? '' : inventoryNotice.value)
+watch(taskNotice, value => emit('notice', value), { immediate: true })
 async function load() {
   if (polling || !alive) return
   polling = true
@@ -112,7 +115,7 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
       <span v-if="view?.saleStopped" class="inventory-sale stopped">已停止售票</span>
       <span v-else-if="validTime(view?.match.sale_at)" class="inventory-sale">{{ remaining > 0 ? `距开售 ${countdown}` : '已开售' }}</span>
     </div>
-    <slot name="toolbar" :open-settings="() => openModal('settings')" :settings-disabled="!view || busy" :inventory-notice="modal ? '' : inventoryNotice" />
+    <slot name="toolbar" :open-settings="() => openModal('settings')" :settings-disabled="!view || busy" />
     <dialog ref="dialog" class="inventory-dialog" :class="{ 'client-settings-dialog': modal === 'settings' }" aria-labelledby="inventory-dialog-title" @cancel.prevent="closeModal()" @close="modal = null">
       <header class="inventory-dialog-head"><div><h2 id="inventory-dialog-title">{{ modal === 'settings' ? '客户端设置' : '比赛详情' }}</h2><p v-if="modal !== 'settings'">{{ view?.match.name || '当前比赛未配置' }}</p></div><button type="button" class="inventory-close" aria-label="关闭弹窗" :disabled="busy" @click="closeModal()">×</button></header>
       <div class="inventory-dialog-content">
