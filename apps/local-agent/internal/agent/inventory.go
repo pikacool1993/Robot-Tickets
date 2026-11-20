@@ -530,12 +530,12 @@ func (s *Service) stageInventoryOrderLocked(id int64, r *inventoryRun) {
 	r.early = false
 	r.status = "pending_order"
 	r.message = "等待下单参数"
-	_ = s.tasks.AppendLog(id, "info", fmt.Sprintf("准备创建订单，方案来源：%s", r.plan.Source))
 	if r.business != nil {
 		s.waitOrderParametersLocked(id, r)
 	}
 }
-func (s *Service) deliverInventoryLocked(source int64, regions []inventory.Region, at time.Time) {
+func (s *Service) deliverInventoryLocked(source int64, regions []inventory.Region, at time.Time) map[int64][]string {
+	logs := map[int64][]string{}
 	// All receivers match the same immutable snapshot with their own conditions.
 	for id, r := range s.inventory.runs {
 		if origin := s.inventory.runs[source]; origin != nil && origin.simulated != r.simulated {
@@ -554,29 +554,33 @@ func (s *Service) deliverInventoryLocked(source int64, regions []inventory.Regio
 		}
 		plan.MatchID = r.match.ID
 		plan.ObservedAt = at
-		s.acceptInventoryPlanLocked(id, r, plan)
+		if s.acceptInventoryPlanLocked(id, r, plan) {
+			logs[id] = append(logs[id], fmt.Sprintf("库存匹配成功：%d人，来源 %s", len(r.task.PeopleSelected), plan.Source))
+		}
 	}
+	return logs
 }
 
 // Caller validates account/session eligibility under s.mu before reaching this state transition.
-func (s *Service) acceptInventoryPlanLocked(id int64, r *inventoryRun, plan inventory.Plan) {
+func (s *Service) acceptInventoryPlanLocked(id int64, r *inventoryRun, plan inventory.Plan) bool {
 	if s.inventory.runs[id] != r || r.ctx.Err() != nil || r.plan != nil || (r.status != "monitoring" && r.status != "waiting") {
-		return
+		return false
 	}
 	r.plan = &plan
 	r.queryCancel()
 	r.status = "ready"
 	r.message = "已命中库存，等待首次提交时间"
-	_ = s.tasks.AppendLog(id, "success", fmt.Sprintf("库存匹配成功：%d人，来源 %s", len(r.task.PeopleSelected), plan.Source))
 	if !r.early {
 		s.stageInventoryOrderLocked(id, r)
 	}
+	return true
 }
 func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, deadline time.Time) {
 	if !waitInventory(ctx, time.Until(deadline)) {
 		return
 	}
 	for {
+		var hitLogs map[int64][]string
 		s.mu.Lock()
 		if ctx.Err() != nil || !s.validInventoryLocked(id, r) || r.plan != nil || (r.status != "waiting" && r.status != "monitoring") {
 			s.mu.Unlock()
@@ -635,7 +639,7 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 			if canPurchase {
 				for _, region := range stock.Regions {
 					if region.Count > 0 {
-						s.deliverInventoryLocked(id, stock.Regions, s.calibratedNowLocked())
+						hitLogs = s.deliverInventoryLocked(id, stock.Regions, s.calibratedNowLocked())
 						break
 					}
 				}
@@ -647,6 +651,11 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 		delay := time.Duration(inventory.Between(settings.QueryMinMS, settings.QueryMaxMS)) * time.Millisecond
 		done := r.plan != nil
 		s.mu.Unlock()
+		for taskID, messages := range hitLogs {
+			for _, message := range messages {
+				_ = s.tasks.AppendLog(taskID, "success", message)
+			}
+		}
 		if done || !waitInventory(ctx, delay) {
 			return
 		}

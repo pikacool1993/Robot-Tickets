@@ -222,8 +222,11 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 			}
 		}
 	}
-	_ = s.tasks.AppendLog(id, "info", r.message)
+	statusMessage := r.message
 	s.mu.Unlock()
+	if err := s.tasks.AppendLog(id, "info", statusMessage); err != nil && s.log != nil {
+		s.log.Warn("order status task log persistence failed", "task_id", id)
+	}
 	callCtx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 	var result business.OrderResult
 	var sendErr error
