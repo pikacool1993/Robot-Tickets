@@ -248,16 +248,6 @@ const active = computed(() => view.value.tasks.find(t => t.id === activeID.value
 const areas = computed(() => view.value.catalog.tiers.flatMap(t => t.areas.filter(a => a.isSaleable).map(a => ({ ...a, tier: t.tier, price: t.price }))))
 const groups = computed(() => ['首层', '顶层', 'VIP'].map(name => ({ name, areas: areas.value.filter(a => name === 'VIP' ? a.tier === 'VIP' : a.tier !== 'VIP' && a.level === (name === '首层' ? '首层看台' : '顶层看台')) })))
 const selectedLabel = (t: Task) => t.selected.join('、') || '未配置'
-function refreshDetail(id: number) {
- const r = inventoryView.value?.refreshRuns?.[id]
- if (!r) return '等待授权并完成业务登录'
- const stamp = (v: string) => v && !v.startsWith('0001-') ? new Date(v).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '尚无'
- return `${r.message} · 上次完整成功 ${stamp(r.lastSuccess)} · 下次 ${stamp(r.next)}`
-}
-function refreshLabel(id: number) {
- const r = inventoryView.value?.refreshRuns?.[id]
- return ({ refreshing: '资料刷新中', pending: '待定时刷新', deferred: '刷新已暂缓', retry: '刷新待重试', blocked: '刷新需处理', scheduled: '定时刷新已开', disabled: '定时刷新已关', waiting: '刷新待就绪' } as Record<string, string>)[r?.status || ''] || '定时刷新'
-}
 function taskStatus(task: Task) {
  const run=inventoryView.value?.runs[task.id]; if(run && run.status!=="stopped") return {label:executionLabels[run.status] || run.status,tone:['paused','order_review','order_cooldown','order_verifying','order_blocked'].includes(run.status)?"warning":run.status==='order_created'?"ready":"pending",detail:run.message + (run.retryAt && !run.retryAt.startsWith("0001-") ? " · 恢复查询 " + new Date(run.retryAt).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false}) : "") + (run.target && !run.target.startsWith("0001-") ? " · 首次提交 " + new Date(run.target).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false}) : "") + (run.plan ? " · " + run.plan.parts.map(p=>`${p.region.name}区 ${p.quantity}张`).join(" + ") : "")}
  if (task.protocolStatus === 'expired') return { label: '需重新授权', tone: 'warning', detail: task.businessStatus === 'blocked' ? (task.businessMessage || '授权已失效，请重新扫码') : '授权已失效，请重新扫码' }
@@ -470,7 +460,6 @@ async function deleteTask() {
             <button v-if="inventoryView?.debugMode && inventoryView.simulation.enabled" :disabled="!!bulkAction || running(task.id) || !task.peopleSelected?.length" title="本地模拟库存、下单和订单售后，不访问官方接口" @click="runSimulation(task)">模拟验收</button>
             <button :title="task.shippingAddress ? '收货地址已配置' : '收货地址未配置'" @click="open(task, 'address')">收货地址</button>
             <button :disabled="!!bulkAction || running(task.id)" class="tw-operation-delete" @click="open(task, 'delete')">删除</button>
-            <span v-if="task.protocolStatus" class="tw-auto-refresh" tabindex="0" :title="refreshDetail(task.id)" :aria-label="refreshDetail(task.id)">{{ refreshLabel(task.id) }}</span>
           </div>
         </article>
       </div>
@@ -662,7 +651,6 @@ async function deleteTask() {
 .tw button.tw-log-error{color:var(--app-warning)}
 .tw-task-operations{grid-column:5;grid-row:1/3;align-self:stretch;display:grid;grid-template-columns:repeat(3,minmax(0,72px));align-content:center;justify-content:center;align-items:center;justify-items:center;gap:7px;padding:0 10px;border-left:1px solid var(--line);min-width:0}
 .tw-task-operations button{width:100%;min-width:0;min-height:30px;padding:5px 6px;font-size:12px;white-space:nowrap;display:flex;align-items:center;justify-content:center;text-align:center}
-.tw-auto-refresh{grid-column:1/-1;font-size:11px;color:var(--muted);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:14px}
 .tw button.tw-start{background:var(--soft)}
 .tw button.tw-operation-delete{color:var(--app-error);background:transparent;border-color:transparent}
 .tw button.tw-operation-delete:hover{background:var(--app-error-bg)}

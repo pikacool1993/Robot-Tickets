@@ -47,7 +47,7 @@ const {chromium} = require("C:/Users/onele/.cache/codex-runtimes/codex-primary-r
    await dialog.getByRole("button",{name:"取消",exact:true}).click();
   }
   for(const width of [1440,1100,800,600]){await page.setViewportSize({width,height:960});if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error("overflow "+width)}
-  const status=page.locator(".tw-auto-refresh").first();if(!(await status.getAttribute("title")).includes("上次完整成功"))throw Error("refresh history missing");
+  if(await page.locator('.tw-auto-refresh').count())throw Error('task card refresh text should be removed');
   if(errors.length)throw Error(errors.join("\n"));
   console.log("Auto refresh settings/save/reopen/status/responsive checks passed; mock backend only");
  } finally {await browser.close()}
