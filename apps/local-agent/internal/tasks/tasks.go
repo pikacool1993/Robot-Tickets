@@ -378,20 +378,39 @@ func (s *Service) Delete(id int64) error {
 }
 
 func addLog(t *Task, level, text string) {
-	entry := Log{At: time.Now().Format(time.RFC3339Nano), Level: level, Text: text}
+	addLogAt(t, level, text, time.Now())
+}
+
+func addLogAt(t *Task, level, text string, at time.Time) {
+	entry := Log{At: at.Format(time.RFC3339Nano), Level: level, Text: text}
 	t.Logs = append(t.Logs, entry)
+	// Deferred execution logs can arrive after synchronous UI/maintenance logs.
+	// Preserve event order, retention, and the actual latest event.
+	for i := len(t.Logs) - 1; i > 0; i-- {
+		prev, err := time.Parse(time.RFC3339Nano, t.Logs[i-1].At)
+		if err != nil || !prev.After(at) {
+			break
+		}
+		t.Logs[i], t.Logs[i-1] = t.Logs[i-1], t.Logs[i]
+	}
 	if len(t.Logs) > 500 {
 		t.Logs = append([]Log{}, t.Logs[len(t.Logs)-500:]...)
 	}
-	t.Latest = &entry
+	latest := t.Logs[len(t.Logs)-1]
+	t.Latest = &latest
 }
 func (s *Service) AppendLog(id int64, level, text string) error {
+	return s.AppendLogAt(id, level, text, time.Now())
+}
+
+// AppendLogAt persists a deferred event using its occurrence time.
+func (s *Service) AppendLogAt(id int64, level, text string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := s.clone()
 	for i := range next.Tasks {
 		if next.Tasks[i].ID == id {
-			addLog(&next.Tasks[i], level, text)
+			addLogAt(&next.Tasks[i], level, text, at)
 			return s.commit(next)
 		}
 	}

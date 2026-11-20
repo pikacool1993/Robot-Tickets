@@ -7,10 +7,32 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"robot/apps/local-agent/internal/business"
 	"robot/apps/local-agent/internal/store"
 )
+
+func TestDeferredLogKeepsEventOrderLatestAndRetention(t *testing.T) {
+	base := time.Date(2026, 11, 20, 12, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	task := Task{}
+	addLogAt(&task, "success", "order created", base.Add(time.Second))
+	addLogAt(&task, "info", "submitting", base.Add(100*time.Millisecond))
+	addLogAt(&task, "success", "stock hit", base)
+	if task.Logs[0].Text != "stock hit" || task.Logs[1].Text != "submitting" || task.Latest.Text != "order created" {
+		t.Fatal("deferred event overwrote latest state", task.Logs)
+	}
+	if task.Logs[0].At != base.Format(time.RFC3339Nano) {
+		t.Fatal("lost occurrence time")
+	}
+	for i := 0; i < 500; i++ {
+		addLogAt(&task, "info", fmt.Sprint(i), base.Add(time.Duration(i+2)*time.Second))
+	}
+	addLogAt(&task, "info", "late old event", base.Add(-time.Second))
+	if len(task.Logs) != 500 || task.Logs[0].Text != "0" || task.Latest.Text != "499" {
+		t.Fatal("deferred log broke retention/latest")
+	}
+}
 
 func fixture() Catalog {
 	return Catalog{Stadium: "球场", Tiers: []Tier{{Tier: "A", Price: 220, Areas: []Area{{Code: "109", Level: "首层看台", IsSaleable: true}, {Code: "110", Level: "首层看台", IsSaleable: false}}}, {Tier: "E", Price: 100, Areas: []Area{{Code: "505", Level: "顶层看台", IsSaleable: true, SpecialArea: "协会"}}}}}

@@ -43,6 +43,7 @@ type State struct {
 	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
+	executionLogs     executionLogs
 	inventory         inventoryState
 	businessWG        sync.WaitGroup
 	businessClient    businessAPI
@@ -373,4 +374,5 @@ func (s *Service) Close() {
 	if s.businessClient != nil {
 		s.businessClient.Close()
 	}
+	s.executionLogs.wg.Wait()
 }

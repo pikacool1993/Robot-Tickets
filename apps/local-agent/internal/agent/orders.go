@@ -136,23 +136,10 @@ func (s *Service) reconcileMatchRunsLocked(match protocol.MatchConfig) {
 }
 
 func (s *Service) orderSnapshotLocked(id int64, r *inventoryRun, p inventory.Plan) orderAttempt {
-	viewers := make([]OrderViewer, 0, len(r.task.PeopleSelected))
-	for _, personID := range r.task.PeopleSelected {
-		for _, person := range r.people {
-			if person.ID != personID {
-				continue
-			}
-			phone := person.FullPhone
-			if phone == "" && !strings.Contains(person.Phone, "*") {
-				phone = person.Phone
-			}
-			viewers = append(viewers, OrderViewer{ID: person.ID, Name: person.Name, Card: person.Card, Phone: phone})
-			break
-		}
-	}
+	viewers := append([]OrderViewer(nil), r.orderPeople.viewers...)
 	planCopy := p
 	planCopy.Parts = append([]inventory.Allocation{}, p.Parts...)
-	return orderAttempt{Account: r.business.binding.Protocol + ":" + r.business.binding.Account.Ref, TaskID: id, Match: r.match, ViewerIDs: append([]string{}, r.task.PeopleSelected...), Viewers: viewers, Plan: planCopy, Token: r.business.session.Token, CreatedAt: s.calibratedNowLocked()}
+	return orderAttempt{Account: r.business.binding.Protocol + ":" + r.business.binding.Account.Ref, TaskID: id, Match: r.match, ViewerIDs: append([]string{}, r.task.PeopleSelected...), Viewers: viewers, Plan: planCopy, Token: r.orderPeople.session.Token, CreatedAt: s.calibratedNowLocked()}
 }
 
 // Keep the attempt snapshot in memory for response handling only.
@@ -177,11 +164,15 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 		s.mu.Unlock()
 		return false
 	}
-	body, err := orders.FromPlan(*r.plan, r.people, r.task.PeopleSelected)
-	var request orders.Request
+	err := r.checkOrderPeople()
+	var body orders.Body
+	if err == nil {
+		body, err = r.orderPeople.people.FromPlan(*r.plan)
+	}
+	var request orders.EncodedRequest
 	var path string
 	if err == nil {
-		request, path, err = orders.BuildWithExpiredKey(body, key, r.business.session, s.calibratedNowLocked(), offlineGrace)
+		request, path, err = orders.BuildEncodedWithExpiredKey(body, key, r.orderPeople.session, s.calibratedNowLocked(), offlineGrace)
 	}
 	if err != nil {
 		if !key.Valid(time.Now()) && !(offlineGrace && key.Present()) {
@@ -198,7 +189,7 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 		s.mu.Unlock()
 		return true
 	}
-	cfg, session, sender := s.session.BusinessConfig, r.business.session, s.orderClient
+	cfg, session, sender := s.session.BusinessConfig, r.orderPeople.session, s.orderClient
 	submittedPlan := *r.plan
 	submittedPlan.Parts = append([]inventory.Allocation{}, r.plan.Parts...)
 	pending := s.orderSnapshotLocked(id, r, submittedPlan)
@@ -207,7 +198,7 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 	r.orderDone = make(chan struct{})
 	r.stopRequested = false
 	if s.debugMode {
-		if raw, marshalErr := json.Marshal(request); marshalErr == nil {
+		if raw, marshalErr := request.OrderJSON(); marshalErr == nil {
 			requestLabel := "N5"
 			if r.simulated {
 				requestLabel = "模拟验收拦截 N5（未发送）"
@@ -223,10 +214,8 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 		}
 	}
 	statusMessage := r.message
+	s.queueExecutionLog(id, "info", statusMessage)
 	s.mu.Unlock()
-	if err := s.tasks.AppendLog(id, "info", statusMessage); err != nil && s.log != nil {
-		s.log.Warn("order status task log persistence failed", "task_id", id)
-	}
 	callCtx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 	var result business.OrderResult
 	var sendErr error

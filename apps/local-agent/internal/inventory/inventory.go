@@ -122,6 +122,17 @@ func ParseResponse(raw []byte) (StockResponse, error) {
 	return StockResponse{ButtonStatus: buttonStatus, ButtonStatusPresent: s.ButtonStatus != nil, ButtonText: strings.TrimSpace(s.ButtonText), Regions: regions}, nil
 }
 func Candidates(regions []Region, c tasks.Catalog, t tasks.Task) []Region {
+	return NewMatcher(c, t).Candidates(regions)
+}
+
+// Matcher is an immutable snapshot of a task's allowed areas. Build it once per
+// run; live quantities and allocation choices are evaluated for every response.
+// Its zero value permits no areas.
+type Matcher struct {
+	allowed map[string]string
+}
+
+func NewMatcher(c tasks.Catalog, t tasks.Task) *Matcher {
 	allowed := map[string]string{}
 	selected := map[string]bool{}
 	for _, v := range t.Selected {
@@ -134,9 +145,13 @@ func Candidates(regions []Region, c tasks.Catalog, t tasks.Task) []Region {
 			}
 		}
 	}
+	return &Matcher{allowed: allowed}
+}
+
+func (m *Matcher) Candidates(regions []Region) []Region {
 	out := []Region{}
 	for _, r := range regions {
-		if tier, ok := allowed[strings.ToLower(r.Name)]; ok && r.Count > 0 {
+		if tier, ok := m.allowed[strings.ToLower(r.Name)]; ok && r.Count > 0 {
 			r.Tier = tier
 			out = append(out, r)
 		}
@@ -192,13 +207,17 @@ func allocate(pool []Region, n int, random func(int64) int64) []Allocation {
 
 // Match never combines separate snapshots. random is injected for deterministic tests.
 func Match(rs []Region, c tasks.Catalog, t tasks.Task, n int, cross bool, random func(int64) int64) (Plan, bool) {
+	return NewMatcher(c, t).Match(rs, n, cross, random)
+}
+
+func (m *Matcher) Match(rs []Region, n int, cross bool, random func(int64) int64) (Plan, bool) {
 	if n <= 0 {
 		return Plan{}, false
 	}
 	if random == nil {
 		random = Random
 	}
-	rs = Candidates(rs, c, t)
+	rs = m.Candidates(rs)
 	singles := []Region{}
 	for _, r := range rs {
 		if r.Count >= int64(n) {

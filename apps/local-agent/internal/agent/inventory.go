@@ -32,9 +32,11 @@ type inventoryRun struct {
 	plan              *inventory.Plan
 	task              tasks.Task
 	catalog           tasks.Catalog
+	matcher           *inventory.Matcher
 	defaults          []inventory.Region
 	match             protocol.MatchConfig
 	people            []business.Person
+	orderPeople       *orderPeopleSnapshot
 	orderPrepared     bool
 	orderInFlight     bool
 	orderDone         chan struct{}
@@ -370,6 +372,7 @@ func (s *Service) startInventoryMode(id int64, realtime, maintenance bool) error
 		realtime = true
 		query, target, early = now, now, false
 	}
+	matcher := inventory.NewMatcher(view.Catalog, *task)
 	var defaults []inventory.Region
 	if early {
 		raw, err := readDefaultStock(filepath.Join(s.root, "config", "bill-regions.json"))
@@ -380,7 +383,7 @@ func (s *Service) startInventoryMode(id int64, realtime, maintenance bool) error
 		if err != nil {
 			return fmt.Errorf("默认库存无效：%w", err)
 		}
-		if _, ok := inventory.Match(defaults, view.Catalog, *task, len(task.PeopleSelected), task.AllowCross, func(int64) int64 { return 0 }); !ok {
+		if _, ok := matcher.Match(defaults, len(task.PeopleSelected), task.AllowCross, func(int64) int64 { return 0 }); !ok {
 			return errors.New("默认库存无法满足本任务人数或座位要求，不能启动")
 		}
 	}
@@ -393,6 +396,11 @@ func (s *Service) startInventoryMode(id int64, realtime, maintenance bool) error
 	qctx, qcancel := context.WithCancel(ctx)
 	r := &inventoryRun{ctx: ctx, cancel: cancel, queryCancel: qcancel, business: b, status: "waiting", message: "等待开售后第1秒查询", target: target, task: *task, catalog: view.Catalog, defaults: defaults, match: s.session.CurrentMatch, early: early, queryAt: query}
 	r.people = peopleData.People
+	if err := r.prepareOrderPeople(); err != nil {
+		cancel()
+		return err
+	}
+	r.matcher = matcher
 	s.inventory.runs[id] = r
 	s.startOrderKeysLocked(id, b)
 	queryDeadline := monotonicStart.Add(query.Sub(now))
@@ -504,12 +512,22 @@ func (s *Service) SaveTaskCross(id int64, value bool) error {
 	}
 	return s.tasks.SaveCross(id, value)
 }
+
+// Accessed under s.mu. Production runs compile at startup; lazy construction
+// also supports runs restored/constructed by internal callers.
+func (r *inventoryRun) stockMatcher() *inventory.Matcher {
+	if r.matcher == nil {
+		r.matcher = inventory.NewMatcher(r.catalog, r.task)
+	}
+	return r.matcher
+}
+
 func (s *Service) inventoryDueLocked(id int64, r *inventoryRun) {
 	if !s.validInventoryLocked(id, r) || !r.early || (r.status != "waiting" && r.status != "monitoring" && r.status != "ready") {
 		return
 	}
 	if r.plan == nil {
-		plan, ok := inventory.Match(r.defaults, r.catalog, r.task, len(r.task.PeopleSelected), r.task.AllowCross, nil)
+		plan, ok := r.stockMatcher().Match(r.defaults, len(r.task.PeopleSelected), r.task.AllowCross, nil)
 		if !ok {
 			s.stopInventoryLocked(id, "paused", "默认库存无法生成方案")
 			return
@@ -534,8 +552,7 @@ func (s *Service) stageInventoryOrderLocked(id int64, r *inventoryRun) {
 		s.waitOrderParametersLocked(id, r)
 	}
 }
-func (s *Service) deliverInventoryLocked(source int64, regions []inventory.Region, at time.Time) map[int64][]string {
-	logs := map[int64][]string{}
+func (s *Service) deliverInventoryLocked(source int64, regions []inventory.Region, at time.Time) {
 	// All receivers match the same immutable snapshot with their own conditions.
 	for id, r := range s.inventory.runs {
 		if origin := s.inventory.runs[source]; origin != nil && origin.simulated != r.simulated {
@@ -544,7 +561,7 @@ func (s *Service) deliverInventoryLocked(source int64, regions []inventory.Regio
 		if (r.status != "monitoring" && !(r.status == "waiting" && !s.calibratedNowLocked().Before(r.queryAt))) || !s.validInventoryLocked(id, r) {
 			continue
 		}
-		plan, ok := inventory.Match(regions, r.catalog, r.task, len(r.task.PeopleSelected), r.task.AllowCross, nil)
+		plan, ok := r.stockMatcher().Match(regions, len(r.task.PeopleSelected), r.task.AllowCross, nil)
 		if !ok {
 			continue
 		}
@@ -555,10 +572,10 @@ func (s *Service) deliverInventoryLocked(source int64, regions []inventory.Regio
 		plan.MatchID = r.match.ID
 		plan.ObservedAt = at
 		if s.acceptInventoryPlanLocked(id, r, plan) {
-			logs[id] = append(logs[id], fmt.Sprintf("库存匹配成功：%d人，来源 %s", len(r.task.PeopleSelected), plan.Source))
+			message := fmt.Sprintf("库存匹配成功：%d人，来源 %s", len(r.task.PeopleSelected), plan.Source)
+			s.queueExecutionLog(id, "success", message)
 		}
 	}
-	return logs
 }
 
 // Caller validates account/session eligibility under s.mu before reaching this state transition.
@@ -580,7 +597,6 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 		return
 	}
 	for {
-		var hitLogs map[int64][]string
 		s.mu.Lock()
 		if ctx.Err() != nil || !s.validInventoryLocked(id, r) || r.plan != nil || (r.status != "waiting" && r.status != "monitoring") {
 			s.mu.Unlock()
@@ -610,20 +626,20 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 		}
 		if err == nil {
 			if r.queryError != "" {
-				_ = s.tasks.AppendLog(id, "info", "库存查询已恢复")
+				s.queueExecutionLog(id, "info", "库存查询已恢复")
 			}
 			r.queryError = ""
 			canPurchase := stock.ButtonStatusPresent && stock.ButtonStatus == 1
 			if canPurchase {
 				if r.buttonHint != "" {
-					_ = s.tasks.AppendLog(id, "info", "服务端按钮状态已恢复；继续监控库存")
+					s.queueExecutionLog(id, "info", "服务端按钮状态已恢复；继续监控库存")
 					r.buttonHint = ""
 				}
 				r.message = "暂无符合条件的库存"
 			} else {
 				if stock.ButtonText != "" && stock.ButtonText != r.buttonHint {
 					r.buttonHint = stock.ButtonText
-					_ = s.tasks.AppendLog(id, "warning", "服务端提示："+r.buttonHint+"；库存监控继续")
+					s.queueExecutionLog(id, "warning", "服务端提示："+r.buttonHint+"；库存监控继续")
 				}
 				hint := r.buttonHint
 				if hint == "" {
@@ -639,7 +655,7 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 			if canPurchase {
 				for _, region := range stock.Regions {
 					if region.Count > 0 {
-						hitLogs = s.deliverInventoryLocked(id, stock.Regions, s.calibratedNowLocked())
+						s.deliverInventoryLocked(id, stock.Regions, s.calibratedNowLocked())
 						break
 					}
 				}
@@ -651,11 +667,6 @@ func (s *Service) pollInventory(id int64, r *inventoryRun, ctx context.Context, 
 		delay := time.Duration(inventory.Between(settings.QueryMinMS, settings.QueryMaxMS)) * time.Millisecond
 		done := r.plan != nil
 		s.mu.Unlock()
-		for taskID, messages := range hitLogs {
-			for _, message := range messages {
-				_ = s.tasks.AppendLog(taskID, "success", message)
-			}
-		}
 		if done || !waitInventory(ctx, delay) {
 			return
 		}
@@ -671,7 +682,7 @@ func (s *Service) recordInventoryQueryErrorLocked(id int64, r *inventoryRun, err
 	}
 	r.message = message
 	if r.queryError != message {
-		_ = s.tasks.AppendLog(id, "warning", message)
+		s.queueExecutionLog(id, "warning", message)
 	}
 	r.queryError = message
 }

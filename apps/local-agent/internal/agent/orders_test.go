@@ -102,10 +102,20 @@ func orderFixture(t *testing.T, n int) (*Service, []*inventoryRun, userkey.Mater
 		rctx, rcancel := context.WithCancel(ctx)
 		match := protocol.MatchConfig{ID: "101", Name: "test-match"}
 		r := &inventoryRun{ctx: rctx, cancel: rcancel, queryCancel: func() {}, business: b, status: "pending_order", task: task, match: match, people: []business.Person{{ID: "12", UID: "34", Name: "test-viewer", Card: "masked-card", FullCard: "private-card", Timestamp: 100, Signature: "viewer-signature"}}, catalog: tasks.Catalog{Tiers: []tasks.Tier{{Tier: "A", Areas: []tasks.Area{{Code: "109", IsSaleable: true}}}}}, plan: &inventory.Plan{MatchID: "101", Source: "default", Parts: []inventory.Allocation{{Region: inventory.Region{ID: 1, Group: 1, Estate: 1, Name: "109", Price: "100.00", Count: 1}, Quantity: 1}}}}
+		if err := r.prepareOrderPeople(); err != nil {
+			t.Fatal(err)
+		}
 		s.inventory.runs[task.ID] = r
 		runs = append(runs, r)
 	}
-	t.Cleanup(func() { cancel(); s.inventory.wg.Wait(); s.businessWG.Wait(); s.orderDetailWG.Wait(); db.Close() })
+	t.Cleanup(func() {
+		cancel()
+		s.inventory.wg.Wait()
+		s.businessWG.Wait()
+		s.orderDetailWG.Wait()
+		s.executionLogs.wg.Wait()
+		db.Close()
+	})
 	return s, runs, key
 }
 
@@ -126,7 +136,11 @@ func TestOrderFailureWaitsThenQueriesAndRematches(t *testing.T) {
 		return []byte(`{"code":1,"btn_status":1,"btn_text":"立即购买","data":[{"region":1,"list":[{"id":2,"estate":2,"name":"109","price":"100.00","usable_count":2}]}]}`), nil
 	}}
 	s.orderClient = orderSenderFunc(func(ctx context.Context, _ business.Config, session business.Session, path string, b any) (business.OrderResult, error) {
-		req := b.(orders.Request)
+		var req orders.Request
+		raw, err := b.(business.OrderJSONBody).OrderJSON()
+		if err != nil || json.Unmarshal(raw, &req) != nil {
+			t.Fatal("invalid encoded order", err)
+		}
 		if !strings.Contains(path, "lid2="+session.UserID+"&") || req.EncryptedData == "" || len(req.Users) != 1 {
 			t.Error("bad submission")
 		}
@@ -185,7 +199,10 @@ func TestDebugOrderRequestIsWrittenToTaskLog(t *testing.T) {
 	var sentBody orders.Request
 	s.orderClient = orderSenderFunc(func(_ context.Context, _ business.Config, _ business.Session, path string, body any) (business.OrderResult, error) {
 		sentPath = path
-		sentBody = body.(orders.Request)
+		raw, err := body.(business.OrderJSONBody).OrderJSON()
+		if err != nil || json.Unmarshal(raw, &sentBody) != nil {
+			t.Fatal("invalid encoded order", err)
+		}
 		return business.OrderResult{Code: 1, OrderID: "34726"}, nil
 	})
 

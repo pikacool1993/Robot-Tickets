@@ -158,6 +158,9 @@ func (r OrderResult) BlocksPurchase() bool {
 	return false
 }
 
+// OrderJSONBody provides already-encoded, read-only JSON for one submission.
+type OrderJSONBody interface{ OrderJSON() ([]byte, error) }
+
 // CreateOrder performs exactly one request. Transport failures must never replay a POST.
 // Response URLs are ignored and redirects are disabled, including for custom clients.
 func (c *Client) CreateOrder(ctx context.Context, cfg Config, session Session, path string, body any) (OrderResult, error) {
@@ -168,7 +171,12 @@ func (c *Client) CreateOrder(ctx context.Context, cfg Config, session Session, p
 	if err != nil || u.IsAbs() || u.Host != "" || u.Path != "/fc/wx_api/v1/MatchCon/createMatchOrder" || u.Query().Get("lid2") != session.UserID || session.Token == "" || session.UserID == "" {
 		return OrderResult{}, errors.New("下单会话或请求路径无效")
 	}
-	raw, err := json.Marshal(body)
+	var raw []byte
+	if encoded, ok := body.(OrderJSONBody); ok {
+		raw, err = encoded.OrderJSON()
+	} else {
+		raw, err = json.Marshal(body)
+	}
 	if err != nil {
 		return OrderResult{}, errors.New("下单参数无法序列化")
 	}

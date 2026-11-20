@@ -1,6 +1,7 @@
 package business
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,43 @@ import (
 	"testing"
 	"time"
 )
+
+type preencodedOrderTestBody struct {
+	raw []byte
+	err error
+}
+
+func (b preencodedOrderTestBody) OrderJSON() ([]byte, error) { return b.raw, b.err }
+func (b preencodedOrderTestBody) MarshalJSON() ([]byte, error) {
+	panic("encoded request was marshaled again")
+}
+
+func TestCreateOrderSendsEncodedBytesWithoutMarshal(t *testing.T) {
+	raw := []byte(`{"encryptedData":"test-cipher","version":54,"expireTime":4600250,"agree":true,"id":"101","regions":[],"users":[]}`)
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		got, err := io.ReadAll(r.Body)
+		if err != nil || !bytes.Equal(got, raw) {
+			t.Error("encoded body was changed", err)
+		}
+		io.WriteString(w, `{"code":1,"data":12345}`)
+	}))
+	defer srv.Close()
+	c := NewClient()
+	defer c.Close()
+	c.orderBase = srv.URL
+	session := Session{Token: "own-token", UserID: "99"}
+	path := "/fc/wx_api/v1/MatchCon/createMatchOrder?lid2=99"
+	out, err := c.CreateOrder(t.Context(), config(), session, path, preencodedOrderTestBody{raw: raw})
+	if err != nil || out.OrderID != "12345" || calls != 1 {
+		t.Fatal("encoded send failed", err, calls)
+	}
+	_, err = c.CreateOrder(t.Context(), config(), session, path, preencodedOrderTestBody{err: errors.New("unbuilt")})
+	if err == nil || calls != 1 {
+		t.Fatal("invalid encoded body sent")
+	}
+}
 
 func TestOrderResponseAndDelay(t *testing.T) {
 	for _, tt := range []struct {

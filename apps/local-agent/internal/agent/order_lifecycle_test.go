@@ -30,6 +30,9 @@ func TestDurableOrderSnapshotAndHistoryDeletion(t *testing.T) {
 	r := runs[0]
 	r.people[0].Phone = "138****0000"
 	r.people[0].FullPhone = "13812340000"
+	if err := r.prepareOrderPeople(); err != nil {
+		t.Fatal(err)
+	}
 	s.orderClient = orderSenderFunc(func(context.Context, business.Config, business.Session, string, any) (business.OrderResult, error) {
 		return business.OrderResult{Code: 1, OrderID: "12345"}, nil
 	})

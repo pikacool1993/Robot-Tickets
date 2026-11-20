@@ -212,6 +212,12 @@ func (s *Service) StartSimulation(id int64) error {
 	ctx, cancel := context.WithCancel(s.ctx)
 	qctx, qcancel := context.WithCancel(ctx)
 	r := &inventoryRun{simulated: true, ctx: ctx, cancel: cancel, queryCancel: qcancel, business: b, status: "waiting", message: "模拟验收：等待开售后第1秒查询", task: task, catalog: catalog, match: match, people: data.People, realtime: !early, early: early, queryAt: query, target: target, defaults: defaults}
+	r.matcher = inventory.NewMatcher(catalog, task)
+	if err := r.prepareOrderPeople(); err != nil {
+		cancel()
+		s.mu.Unlock()
+		return err
+	}
 	if old := s.inventory.runs[id]; old != nil && old.cancel != nil {
 		old.cancel()
 	}

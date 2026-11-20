@@ -181,6 +181,7 @@ func TestInventoryPollingStateMatrixAndChangeOnlyLogs(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+	s.executionLogs.wg.Wait()
 	logs := s.tasks.Snapshot().Tasks[0].Logs
 	counts := map[string]int{}
 	for _, entry := range logs {
@@ -224,11 +225,13 @@ func TestInventoryQueryErrorsDoNotPauseOrCancelDeadline(t *testing.T) {
 	}
 	for _, queryErr := range errorsToCheck {
 		s.recordInventoryQueryErrorLocked(task.ID, r, queryErr)
+		s.executionLogs.wg.Wait()
 		if r.status != "monitoring" || r.plan != nil || r.target != target || ctx.Err() != nil || qctx.Err() != nil || r.message == "" {
 			t.Fatalf("query error changed execution state: %v", queryErr)
 		}
 		before := len(ts.Snapshot().Tasks[0].Logs)
 		s.recordInventoryQueryErrorLocked(task.ID, r, queryErr)
+		s.executionLogs.wg.Wait()
 		if len(ts.Snapshot().Tasks[0].Logs) != before {
 			t.Fatal("repeated error flooded logs")
 		}
