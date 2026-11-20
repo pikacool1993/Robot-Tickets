@@ -13,6 +13,7 @@ const tasks:any[] = [
 ].map(t=>({...t,mode:'tier',authProtocol:'yyb',fingerprint:'demo',people:[{id:'p1',name:t.spectatorNames[0]||'示例观演人',card:'************1234',phone:'138****0000',self:true}],latest:{at:new Date().toISOString(),text:t.id===3?'授权已失效，请重新扫码':t.id===4?'任务已创建，等待绑定微信账号':'账号与任务配置已就绪',level:t.id===3?'warning':'info'}}))
 const inventory:any = {match:{id:'DEMO-01',name:'示例比赛 · 主队 VS 客队',match_at:'2026-11-20T19:30:00+08:00',sale_at:'2026-11-13T12:00:00+08:00',enabled:true,revision:1},settings:{queryMinMS:300,queryMaxMS:800,orderMinMS:4500,orderMaxMS:7500},clockReady:true,clockError:'',offsetMS:12,now:new Date().toISOString(),runs:{}}
 window.go = {main:{App:{
+ SaveAutoRefreshSettings:async(settings:any)=>{inventory.autoRefresh={...settings}},
  GetState:async()=>({...state}),GetRememberedForm:async()=>({}),GetTasks:async()=>({catalog,configError:'',tasks:structuredClone(tasks)}),GetProtocolStatus:async()=>({...protocol}),GetInventory:async()=>({...inventory,now:new Date().toISOString()}),
  ControlProtocol:async(action:string)=>{protocol.state=action==='stop'?'stopped':'running'},
  CreateTask:async()=>{const t={id:Math.max(...tasks.map(t=>t.id))+1,mode:'tier',selected:['A','B','C','D','E'],seatValid:true,fingerprint:'demo',latest:null};tasks.push(t);return structuredClone(t)},
@@ -23,4 +24,6 @@ window.go = {main:{App:{
  SaveTaskPeople:async(id:number,ids:string[])=>{const t=tasks.find(t=>t.id===id);t.peopleSelected=ids;t.spectatorNames=t.people.filter((p:any)=>ids.includes(p.id)).map((p:any)=>p.name)},GetTaskPersonDetails:async()=>({id:'p1',name:'示例观演人',card:'************1234',phone:'138****0000',self:true}),
  BeginAuthorization:async(id:number)=>({id:'demo',taskID:id,protocol:'yyb',image:'',status:'failed',message:'预览版本不连接真实授权服务',expiresAt:''}),GetAuthorization:async(id:number)=>({id:'demo',taskID:id,protocol:'yyb',image:'',status:'failed',message:'预览版本不连接真实授权服务',expiresAt:''})
 } as any}}
+inventory.autoRefresh={enabled:false,intervalMinutes:30}
+inventory.refreshRuns={1:{lastSuccess:new Date().toISOString(),next:new Date(Date.now()+1800000).toISOString(),retryAt:'',status:'disabled',message:'自动刷新已关闭'}}
 createApp(App).mount('#app')

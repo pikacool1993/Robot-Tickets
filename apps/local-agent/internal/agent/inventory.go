@@ -56,16 +56,18 @@ type ExecutionView struct {
 	RetryAt time.Time       `json:"retryAt"`
 }
 type InventoryView struct {
-	Match       protocol.MatchConfig    `json:"match"`
-	Settings    inventory.Settings      `json:"settings"`
-	ClockReady  bool                    `json:"clockReady"`
-	ClockError  string                  `json:"clockError"`
-	OffsetMS    int64                   `json:"offsetMS"`
-	Now         time.Time               `json:"now"`
-	Runs        map[int64]ExecutionView `json:"runs"`
-	SaleStopped bool                    `json:"saleStopped"`
-	Simulation  SimulationSettings      `json:"simulation"`
-	DebugMode   bool                    `json:"debugMode"`
+	AutoRefresh AutoRefreshSettings       `json:"autoRefresh"`
+	RefreshRuns map[int64]AutoRefreshView `json:"refreshRuns"`
+	Match       protocol.MatchConfig      `json:"match"`
+	Settings    inventory.Settings        `json:"settings"`
+	ClockReady  bool                      `json:"clockReady"`
+	ClockError  string                    `json:"clockError"`
+	OffsetMS    int64                     `json:"offsetMS"`
+	Now         time.Time                 `json:"now"`
+	Runs        map[int64]ExecutionView   `json:"runs"`
+	SaleStopped bool                      `json:"saleStopped"`
+	Simulation  SimulationSettings        `json:"simulation"`
+	DebugMode   bool                      `json:"debugMode"`
 }
 type inventoryState struct {
 	settings  inventory.Settings
@@ -84,6 +86,9 @@ type inventoryState struct {
 }
 
 func (s *Service) initInventory() error {
+	if err := s.initAutoRefresh(); err != nil {
+		return err
+	}
 	s.inventory.settings = inventory.Defaults()
 	s.inventory.runs = map[int64]*inventoryRun{}
 	s.inventory.orders = map[string]*OrderRecord{}
@@ -126,7 +131,7 @@ func (s *Service) InventoryView() (InventoryView, error) {
 	if err := s.requireTaskSession(); err != nil {
 		return InventoryView{}, err
 	}
-	out := InventoryView{Match: s.session.CurrentMatch, Settings: s.inventory.settings, ClockReady: s.inventory.synced, ClockError: s.inventory.syncError, OffsetMS: s.inventory.offset, Now: s.calibratedNowLocked(), Runs: map[int64]ExecutionView{}, Simulation: s.simulation, DebugMode: s.debugMode}
+	out := InventoryView{Match: s.session.CurrentMatch, Settings: s.inventory.settings, ClockReady: s.inventory.synced, ClockError: s.inventory.syncError, OffsetMS: s.inventory.offset, Now: s.calibratedNowLocked(), Runs: map[int64]ExecutionView{}, Simulation: s.simulation, DebugMode: s.debugMode, AutoRefresh: s.autoRefresh, RefreshRuns: s.autoRefreshViewsLocked(s.refreshTime())}
 	if s.inventory.saleStops[out.Match.ID] {
 		out.SaleStopped = true
 	}
@@ -230,7 +235,7 @@ func (s *Service) validInventoryLocked(id int64, r *inventoryRun) bool {
 	if r.business != nil && !r.business.offlineSince.IsZero() && time.Since(r.business.offlineSince) >= 18*time.Hour {
 		return false
 	}
-	return s.inventory.runs[id] == r && r.ctx.Err() == nil && r.business != nil && s.currentBusinessLocked(id, r.business) && !r.business.busy
+	return s.inventory.runs[id] == r && r.ctx.Err() == nil && r.business != nil && s.currentBusinessLocked(id, r.business) && !r.business.busy && !r.business.refresh.invalid
 }
 func (s *Service) stopInventoryLocked(id int64, status, message string) {
 	if r := s.inventory.runs[id]; r != nil {
@@ -249,7 +254,7 @@ func (s *Service) stopInventoryLocked(id int64, status, message string) {
 			r.status, r.message = "stopping", "正在停止，等待下单结果"
 			return
 		}
-		if r.business != nil {
+		if r.business != nil && !r.business.busy && !r.business.refreshReady && !r.business.refresh.active {
 			s.stopOrderKeysLocked(r.business)
 		}
 		r.cancel()
@@ -291,6 +296,9 @@ func (s *Service) startInventory(id int64, realtime bool) error {
 func (s *Service) startInventoryMode(id int64, realtime, maintenance bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.startInventoryModeLocked(id, realtime, maintenance)
+}
+func (s *Service) startInventoryModeLocked(id int64, realtime, maintenance bool) error {
 	if s.debugMode && s.simulation.Enabled {
 		return errors.New("模拟模式已开启，请使用任务卡片的模拟验收入口")
 	}
@@ -328,7 +336,7 @@ func (s *Service) startInventoryMode(id int64, realtime, maintenance bool) error
 		return errors.New("本场已停止售票")
 	}
 	b := s.businessRuns[id]
-	if b == nil || !s.currentBusinessLocked(id, b) || b.busy || b.session.Token == "" {
+	if b == nil || !s.currentBusinessLocked(id, b) || b.busy || b.refresh.active || b.refresh.invalid || b.refresh.blocked || b.refreshReady || b.session.Token == "" {
 		return errors.New("请先确保账号在线并完成业务登录")
 	}
 	if !b.offlineSince.IsZero() && time.Since(b.offlineSince) >= 18*time.Hour {
@@ -443,6 +451,11 @@ func (s *Service) StopInventory(id int64) error {
 	}
 	if s.maintenanceResume != nil {
 		s.maintenanceResume[id] = false
+	}
+	if b := s.businessRuns[id]; b != nil {
+		b.resumeEpoch++
+		b.resumePending = false
+		b.resumeNotBefore = time.Time{}
 	}
 	r := s.inventory.runs[id]
 	if r != nil && (r.status == "order_created" || r.status == "order_verifying" || r.status == "order_blocked") {

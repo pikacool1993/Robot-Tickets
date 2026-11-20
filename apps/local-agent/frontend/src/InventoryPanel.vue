@@ -10,19 +10,42 @@ const modal = ref<'details' | 'settings' | null>(null), dialog = ref<HTMLDialogE
 const settingsForm = ref<HTMLFormElement | null>(null)
 const saleStopBusy = ref(false)
 const draft = ref<InventorySettings>({ queryMinMS: 300, queryMaxMS: 800, orderMinMS: 4500, orderMaxMS: 7500 })
+const refreshDraft = ref({ enabled: false, intervalMinutes: 30 })
 const simulationDraft = ref({ enabled:false, orderFailurePercents:[6,6,6,6,6,5,5,5,5,5,5,5], queryFailurePercent:0, cancelFailurePercent:0, refundFailurePercent:0, successPercent:35, orderSuccessPercent:35, paidOrderPercent:50, emptyPercent:30, unavailablePercent:15, networkErrorPercent:10, businessErrorPercent:10 })
 const orderFailureLabels = ['库存不足（code=3，默认等待）','抢座失败（code=5，默认等待）','成功码缺少订单 ID','有未支付订单','重复购票','超过最高购票量','请求超时','响应无法解析','库存不足（timeout=2秒）','抢座失败（timeout=2秒）','连接中断','其他业务失败（code=996）']
 const orderProbabilityTotal = computed(() => simulationDraft.value.orderSuccessPercent + simulationDraft.value.orderFailurePercents.reduce((sum, value) => sum + value, 0))
 function resetDefaults() {
+  refreshDraft.value = { enabled: false, intervalMinutes: 30 }
   draft.value = { queryMinMS:300, queryMaxMS:800, orderMinMS:4500, orderMaxMS:7500 }
   simulationDraft.value = { enabled:false, queryFailurePercent:0, cancelFailurePercent:0, refundFailurePercent:0, successPercent:35, orderSuccessPercent:35, paidOrderPercent:50, emptyPercent:30, unavailablePercent:15, networkErrorPercent:10, businessErrorPercent:10, orderFailurePercents:[6,6,6,6,6,5,5,5,5,5,5,5] }
   error.value = ''
 }
 const orderMin = computed({ get: () => draft.value.orderMinMS / 1000, set: (v: number) => { draft.value.orderMinMS = Math.round(v * 1000) } })
 const orderMax = computed({ get: () => draft.value.orderMaxMS / 1000, set: (v: number) => { draft.value.orderMaxMS = Math.round(v * 1000) } })
-let alive = true, polling = false, anchor = 0, sampled = 0, saleRevision = 0
-const displayNow = ref(0)
+let alive = true, polling = false, anchor = performance.now(), sampled = Date.now(), saleRevision = 0
+const displayNow = ref(sampled)
+const liveClockFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+const liveClock = computed(() => liveClockFormat.format(new Date(displayNow.value)))
 const validTime = (v?: string) => !!v && !v.startsWith('0001-') && Number.isFinite(Date.parse(v))
+const refreshNow = ref(Date.now())
+const refreshOverview = computed(() => {
+  if (!view.value) return { text: '定时刷新 · 加载中', detail: '正在获取定时刷新设置' }
+  if (loadError.value) return { text: '定时刷新 · 状态待更新', detail: loadError.value }
+  if (!view.value.autoRefresh.enabled) return { text: '定时刷新已关闭', detail: '可在设置中开启，覆盖所有已授权任务' }
+  const runs = Object.entries(view.value.refreshRuns || {})
+  const detail = `每 ${view.value.autoRefresh.intervalMinutes} 分钟刷新；各任务独立计时，显示最近一项安排`
+  if (runs.some(([, r]) => r.status === 'refreshing')) return { text: '定时刷新已开启 · 资料刷新中', detail }
+  const upcoming = runs.filter(([, r]) => !['blocked', 'waiting', 'disabled'].includes(r.status) && validTime(r.next)).sort((a, b) => Date.parse(a[1].next) - Date.parse(b[1].next))
+  const first = upcoming[0]
+  if (!first) return { text: `定时刷新已开启 · ${runs.some(([, r]) => r.status === 'blocked') ? '等待人工处理' : '等待任务就绪'}`, detail }
+  const [id, run] = first
+  const seconds = Math.max(0, Math.ceil((Date.parse(run.next) - refreshNow.value) / 1000))
+  const reason = `${detail}；任务 ${id}：${run.message}`
+  if (!seconds) return { text: `定时刷新已开启 · ${run.status === 'deferred' ? '已到期，暂缓刷新' : '已到期，等待刷新'}`, detail: reason }
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60
+  const clock = [h, m, s].map(n => String(n).padStart(2, '0')).join(':')
+  return { text: `定时刷新已开启 · 距${run.status === 'retry' ? '重试' : '最近刷新'} ${clock}`, detail: reason }
+})
 const remaining = computed(() => validTime(view.value?.match.sale_at) ? Math.max(0, Math.ceil((Date.parse(view.value!.match.sale_at) - displayNow.value) / 1000)) : 0)
 const dateFormat = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -56,6 +79,7 @@ async function openModal(kind: 'details' | 'settings') {
   if (busy.value || (kind === 'settings' && !view.value)) return
   if (kind === 'settings') { draft.value = { ...view.value!.settings }; simulationDraft.value = { ...view.value!.simulation, orderFailurePercents: [...view.value!.simulation.orderFailurePercents] } }
   error.value = ''; modal.value = kind
+  if (kind === 'settings') refreshDraft.value = { ...view.value!.autoRefresh }
   await nextTick(); dialog.value?.showModal()
 }
 function closeModal() { if (!busy.value) { dialog.value?.close(); modal.value = null } }
@@ -63,7 +87,7 @@ async function save() {
   if (busy.value || !settingsForm.value?.reportValidity()) return
   if (view.value?.debugMode && orderProbabilityTotal.value !== 100) { error.value = '下单成功和 12 种失败场景概率合计必须为 100%'; return }
   busy.value = true; error.value = ''
-  try { await backend().SaveInventorySettings({ ...draft.value }); if (view.value?.debugMode) await backend().SaveSimulationSettings({ ...simulationDraft.value }); await load(); if (alive) { dialog.value?.close(); modal.value = null } }
+  try { await backend().SaveAutoRefreshSettings({ ...refreshDraft.value }); await backend().SaveInventorySettings({ ...draft.value }); if (view.value?.debugMode) await backend().SaveSimulationSettings({ ...simulationDraft.value }); await load(); if (alive) { dialog.value?.close(); modal.value = null } }
   catch (e) { if (alive) error.value = failure(e) } finally { busy.value = false }
 }
 async function sync() {
@@ -91,7 +115,7 @@ async function changeSaleStop(event: Event) {
   finally { saleStopBusy.value = false }
 }
 let poll: ReturnType<typeof setInterval>, tick: ReturnType<typeof setInterval>
-onMounted(() => { void load(); poll = setInterval(load, 1000); tick = setInterval(() => { displayNow.value = sampled + performance.now() - anchor }, 200) })
+onMounted(() => { void load(); poll = setInterval(load, 1000); tick = setInterval(() => { displayNow.value = sampled + performance.now() - anchor; refreshNow.value = Date.now() }, 200) })
 onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dialog.value?.close() })
 </script>
 <template>
@@ -104,6 +128,7 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
       </button>
       <span class="inventory-enabled" :class="{ enabled: view?.match.enabled }">{{ view?.match.enabled ? '已启用' : '未启用' }}</span>
       <div class="inventory-clock">
+        <time class="inventory-live-time" :datetime="new Date(displayNow).toISOString()" :title="`${time(new Date(displayNow).toISOString())}（北京时间） · ${view?.clockReady ? '使用校准时间' : '使用本机时间，尚未校准'}`"><span>北京时间</span><b>{{ liveClock }}</b></time>
         <span :class="{ ready: view?.clockReady }" :title="view?.clockReady ? `时间已校准 · 偏差 ${view.offsetMS}ms` : '尚未校准，暂不可启动'"><i aria-hidden="true"></i>{{ view?.clockReady ? `已校准 · ${view.offsetMS}ms` : '未校准' }}</span>
         <button type="button" class="inventory-calibrate" :disabled="busy" @click="sync">{{ busy ? '处理中…' : '校准时间' }}</button>
       </div>
@@ -114,6 +139,7 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
       <span :title="`开售 ${time(view?.match.sale_at)}（北京时间）`">开售 <b>{{ time(view?.match.sale_at) }}</b></span>
       <span v-if="view?.saleStopped" class="inventory-sale stopped">已停止售票</span>
       <span v-else-if="validTime(view?.match.sale_at)" class="inventory-sale">{{ remaining > 0 ? `距开售 ${countdown}` : '已开售' }}</span>
+      <span class="inventory-refresh-status" :class="{ enabled: view?.autoRefresh.enabled }" :title="refreshOverview.detail"><i aria-hidden="true"></i>{{ refreshOverview.text }}</span>
     </div>
     <slot name="toolbar" :open-settings="() => openModal('settings')" :settings-disabled="!view || busy" />
     <dialog ref="dialog" class="inventory-dialog" :class="{ 'client-settings-dialog': modal === 'settings' }" aria-labelledby="inventory-dialog-title" @cancel.prevent="closeModal()" @close="modal = null">
@@ -141,6 +167,16 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
               </div>
             </div>
             <p class="settings-help">从最小值到最大值；下单偏移仅影响新启动任务。</p>
+            <h3 class="settings-section-title">定时刷新</h3>
+            <div class="settings-row">
+              <span class="settings-row-label">自动刷新</span>
+              <label class="settings-checkbox" for="auto-refresh-enabled"><input id="auto-refresh-enabled" v-model="refreshDraft.enabled" type="checkbox" aria-describedby="auto-refresh-help" /><span>所有已授权任务</span></label>
+            </div>
+            <div class="settings-row">
+              <label for="auto-refresh-minutes" class="settings-row-label">刷新间隔</label>
+              <div class="settings-range settings-range-single"><input id="auto-refresh-minutes" v-model.number="refreshDraft.intervalMinutes" type="number" min="1" max="1440" step="1" required /><span class="settings-unit">分钟</span></div>
+            </div>
+            <p id="auto-refresh-help" class="settings-help">每次重新取码、登录并更新观演人。运行中短暂维护后恢复；已命中方案及在途订单优先，开售前 30 秒起避让首次提交。停止购票后仍可刷新资料。</p>
             <template v-if="view?.debugMode">
               <legend class="simulation-legend">本地模拟验收</legend>
               <label class="simulation-enable"><input v-model="simulationDraft.enabled" type="checkbox"/>启用模拟验收（不会请求官方库存或下单接口）</label>
@@ -210,10 +246,22 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
 .settings-row{display:grid;grid-template-columns:100px minmax(0,1fr);align-items:center;gap:12px;padding:6px 0}
 .simulation-legend{margin-top:14px!important}.simulation-enable{display:inline-flex!important;width:max-content;align-items:center;gap:5px;padding:5px 0;color:var(--app-ink)!important;white-space:nowrap}.simulation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 12px}.simulation-grid label{display:grid;gap:4px;margin:0;font-size:11px;color:var(--app-muted)}.simulation-grid input{height:30px;margin:0!important;padding:4px 8px!important;font-size:12px!important}.simulation-enable input{accent-color:var(--app-accent);width:15px;height:15px;flex:0 0 15px;margin:0!important;padding:0!important}
 .settings-row-label{font-size:12px;color:var(--app-muted)}
+.inventory-live-time{display:inline-flex;align-items:baseline;gap:6px;font-size:11px;color:var(--app-muted)}
+.inventory-live-time b{font-size:14px;font-weight:500;color:var(--app-ink);font-variant-numeric:tabular-nums}
+.inventory-refresh-status{display:inline-flex;align-items:center;gap:6px;max-width:100%;color:var(--app-muted);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.inventory-refresh-status i{width:5px;height:5px;border-radius:50%;background:currentColor;flex-shrink:0}
+.inventory-refresh-status.enabled{color:var(--app-success, #86ad91)}
+.client-settings-dialog .settings-section-title{font-size:12px;font-weight:600;color:var(--app-ink);padding:0 0 8px;border-bottom:1px solid var(--app-line);margin:20px 0 4px}
+.client-settings-dialog .settings-checkbox{display:flex;align-items:center;gap:8px;min-height:30px;min-width:0;color:var(--app-ink);cursor:pointer}
+.client-settings-dialog .settings-checkbox input{display:block;flex:0 0 16px;width:16px;height:16px;margin:0;padding:0;accent-color:var(--app-accent)}
+.settings-checkbox span{min-width:0;overflow-wrap:anywhere}
+.settings-range-single .settings-unit{grid-column:2 / -1}
 .settings-range{display:grid;grid-template-columns:minmax(0,1fr) 14px minmax(0,1fr) 26px;align-items:center;gap:8px;min-width:0}
 .client-settings-dialog .settings-range input{height:30px;margin:0;padding:4px 8px;font-size:12px;border-radius:4px;font-variant-numeric:tabular-nums}
 .settings-range-separator{text-align:center;color:var(--app-muted);font-size:11px}
 .settings-unit{color:var(--app-muted);font-size:11px;white-space:nowrap}
 .client-settings-dialog .settings-help{font-size:11px;color:var(--app-muted);margin:7px 0 0;line-height:1.6}
 @media(pointer:coarse){.client-settings-dialog .settings-range input{height:36px}}
+@media(max-width:480px){.settings-row{grid-template-columns:84px minmax(0,1fr);gap:8px}.settings-range{gap:6px;grid-template-columns:minmax(0,1fr) 10px minmax(0,1fr) 26px}}
+@media(max-width:380px){.settings-row{grid-template-columns:minmax(0,1fr);gap:6px;padding:8px 0}}
 </style>

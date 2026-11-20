@@ -43,6 +43,10 @@ type State struct {
 	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
+	autoRefresh       AutoRefreshSettings
+	nextAutoRefresh   time.Time
+	refreshNow        func() time.Time
+	maintenanceClaims map[int64]bool
 	executionLogs     executionLogs
 	inventory         inventoryState
 	businessWG        sync.WaitGroup

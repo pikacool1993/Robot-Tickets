@@ -229,6 +229,9 @@ func (a *App) PrepareRepurchase(id int64, viewerIDs, seats []string, mode string
 func (a *App) SaveInventorySettings(v inventory.Settings) error {
 	return a.service.SaveInventorySettings(v)
 }
+func (a *App) SaveAutoRefreshSettings(v agent.AutoRefreshSettings) error {
+	return a.service.SaveAutoRefreshSettings(v)
+}
 func (a *App) SimulationSettings() agent.SimulationSettings { return a.service.SimulationSettings() }
 func (a *App) SaveSimulationSettings(v agent.SimulationSettings) error {
 	return a.service.SaveSimulationSettings(v)

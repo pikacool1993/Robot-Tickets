@@ -76,6 +76,10 @@ func (s *Service) ControlProtocol(action string, confirmed bool) error {
 	return s.protocols.Control(ctx, s.state.AuthProtocol, action, confirmed)
 }
 func (s *Service) BeginAuthorization(id int64) (protocols.Attempt, error) {
+	if err := s.claimMaintenance(id); err != nil {
+		return protocols.Attempt{}, err
+	}
+	defer s.releaseMaintenance(id)
 	_, err := s.pauseForMaintenance(id)
 	if err != nil {
 		return protocols.Attempt{}, err
@@ -90,7 +94,13 @@ func (s *Service) BeginAuthorization(id int64) (protocols.Attempt, error) {
 	}
 	for _, t := range s.tasks.Snapshot().Tasks {
 		if t.ID == id {
-			return s.protocols.Begin(id, s.state.AuthProtocol)
+			attempt, err := s.protocols.Begin(id, s.state.AuthProtocol)
+			if err == nil {
+				if b := s.businessRuns[id]; b != nil {
+					b.refresh.authorizationPending = true
+				}
+			}
+			return attempt, err
 		}
 	}
 	return protocols.Attempt{}, errors.New("任务不存在")
@@ -106,6 +116,9 @@ func (s *Service) Authorization(id int64) (protocols.Attempt, error) {
 	}
 	attempt := s.protocols.Attempt(id)
 	if attempt.Status == "failed" || attempt.Status == "expired" || attempt.Status == "timeout" || attempt.Status == "cancelled" {
+		if b := s.businessRuns[id]; b != nil {
+			b.refresh.authorizationPending = false
+		}
 		if r := s.inventory.runs[id]; r != nil && r.status == "maintenance" {
 			r.status, r.message = "maintenance_failed", "授权未完成，请重试授权或点击停止"
 		}
