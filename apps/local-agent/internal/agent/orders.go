@@ -240,10 +240,21 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 		s.clearSubmissionLocked(id)
 		s.saveCreatedOrderLocked(id, r, submittedPlan, result.OrderID, session.Token, pending.Viewers)
 		record := *r.order
+		owner := s.syncOwnerLocked()
+		s.seedSyncOrderLocked(owner, &record, cfg)
 		s.orderDetailWG.Add(1)
 		go func() {
 			defer s.orderDetailWG.Done()
-			_ = s.refreshOrderDetail(cfg, &record)
+			detailErr := s.refreshOrderDetail(cfg, &record)
+			detail := record.Details
+			if detailErr == nil {
+				s.mu.Lock()
+				if current, _ := s.findOrderLocked(record.TaskID, record.ID); current != nil {
+					detail = current.Details
+				}
+				s.mu.Unlock()
+			}
+			s.completeSyncOrderDetail(owner, record, detail, detailErr)
 		}()
 	}
 	if r.stopRequested || r.status == "stopping" {

@@ -14,6 +14,10 @@ const refreshDraft = ref({ enabled: false, intervalMinutes: 30 })
 const simulationDraft = ref({ enabled:false, orderFailurePercents:[6,6,6,6,6,5,5,5,5,5,5,5], queryFailurePercent:0, cancelFailurePercent:0, refundFailurePercent:0, successPercent:35, orderSuccessPercent:35, paidOrderPercent:50, emptyPercent:30, unavailablePercent:15, networkErrorPercent:10, businessErrorPercent:10 })
 const orderFailureLabels = ['库存不足（code=3，默认等待）','抢座失败（code=5，默认等待）','成功码缺少订单 ID','有未支付订单','重复购票','超过最高购票量','请求超时','响应无法解析','库存不足（timeout=2秒）','抢座失败（timeout=2秒）','连接中断','其他业务失败（code=996）']
 const orderProbabilityTotal = computed(() => simulationDraft.value.orderSuccessPercent + simulationDraft.value.orderFailurePercents.reduce((sum, value) => sum + value, 0))
+const stockProbabilityTotal = computed(() => {
+  const { successPercent, emptyPercent, unavailablePercent, networkErrorPercent, businessErrorPercent } = simulationDraft.value
+  return successPercent + emptyPercent + unavailablePercent + networkErrorPercent + businessErrorPercent
+})
 function resetDefaults() {
   refreshDraft.value = { enabled: false, intervalMinutes: 30 }
   draft.value = { queryMinMS:300, queryMaxMS:800, orderMinMS:4500, orderMaxMS:7500 }
@@ -166,7 +170,7 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
                 <span class="settings-unit">秒</span>
               </div>
             </div>
-            <p class="settings-help">从最小值到最大值；下单偏移仅影响新启动任务。</p>
+            <p class="settings-help">下单偏移仅影响新启动的任务。</p>
             <h3 class="settings-section-title">定时刷新</h3>
             <div class="settings-row">
               <span class="settings-row-label">自动刷新</span>
@@ -176,42 +180,45 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
               <label for="auto-refresh-minutes" class="settings-row-label">刷新间隔</label>
               <div class="settings-range settings-range-single"><input id="auto-refresh-minutes" v-model.number="refreshDraft.intervalMinutes" type="number" min="1" max="1440" step="1" required /><span class="settings-unit">分钟</span></div>
             </div>
-            <p id="auto-refresh-help" class="settings-help">每次重新取码、登录并更新观演人。运行中短暂维护后恢复；已命中方案及在途订单优先，开售前 30 秒起避让首次提交。停止购票后仍可刷新资料。</p>
+            <p id="auto-refresh-help" class="settings-help">刷新会重新登录并更新观演人。开售前 30 秒起避让首次提交，已命中方案和在途订单优先。</p>
             <template v-if="view?.debugMode">
-              <legend class="simulation-legend">本地模拟验收</legend>
-              <label class="simulation-enable"><input v-model="simulationDraft.enabled" type="checkbox"/>启用模拟验收（不会请求官方库存或下单接口）</label>
+              <h3 class="simulation-legend">本地模拟验收</h3>
+              <label class="simulation-enable"><input v-model="simulationDraft.enabled" type="checkbox"/>启用模拟验收</label>
+              <h4 class="simulation-legend">库存响应（合计 {{ stockProbabilityTotal }}% / 100%）</h4>
               <div class="simulation-grid">
                 <label>库存命中概率 %<input v-model.number="simulationDraft.successPercent" type="number" min="0" max="100"/></label>
-                <label>成功订单已付款概率 %<input v-model.number="simulationDraft.paidOrderPercent" type="number" min="0" max="100"/></label>
-                <label>查单失败概率 %<input v-model.number="simulationDraft.queryFailurePercent" type="number" min="0" max="100"/></label>
-                <label>取消失败概率 %<input v-model.number="simulationDraft.cancelFailurePercent" type="number" min="0" max="100"/></label>
-                <label>退款失败概率 %<input v-model.number="simulationDraft.refundFailurePercent" type="number" min="0" max="100"/></label>
                 <label>空库存概率 %<input v-model.number="simulationDraft.emptyPercent" type="number" min="0" max="100"/></label>
                 <label>按钮不可购概率 %<input v-model.number="simulationDraft.unavailablePercent" type="number" min="0" max="100"/></label>
                 <label>网络异常概率 %<input v-model.number="simulationDraft.networkErrorPercent" type="number" min="0" max="100"/></label>
                 <label>业务异常概率 %<input v-model.number="simulationDraft.businessErrorPercent" type="number" min="0" max="100"/></label>
               </div>
-              <h3 class="simulation-legend">下单响应概率（合计 {{ orderProbabilityTotal }}% / 100%）</h3>
+              <p class="settings-help">首次查询及开售后一分钟内按默认库存返回。</p>
+              <h4 class="simulation-legend">下单响应（合计 {{ orderProbabilityTotal }}% / 100%）</h4>
               <div class="simulation-grid">
                 <label>下单成功 %<input v-model.number="simulationDraft.orderSuccessPercent" type="number" min="0" max="100" step="1" required/></label>
                 <label v-for="(label, index) in orderFailureLabels" :key="index">{{ label }} %<input v-model.number="simulationDraft.orderFailurePercents[index]" type="number" min="0" max="100" step="1" required/></label>
               </div>
-              <p class="settings-help">库存命中、空库存、按钮不可购、网络异常、业务异常合计须为 100%。下单成功与 12 种失败场景单独合计 100%；某项设为 0 则不会出现。已付款及查单、取消、退款失败概率独立设置。模拟等待开售后 1 秒查询；首轮及开售后一分钟内固定返回完整抓包数据，不受概率影响；下单失败场景随机抽取，沿用实际等待及恢复规则。</p>
+              <h4 class="simulation-legend">订单状态和操作</h4>
+              <div class="simulation-grid">
+                <label>成功订单已付款概率 %<input v-model.number="simulationDraft.paidOrderPercent" type="number" min="0" max="100"/></label>
+                <label>查单失败概率 %<input v-model.number="simulationDraft.queryFailurePercent" type="number" min="0" max="100"/></label>
+                <label>取消失败概率 %<input v-model.number="simulationDraft.cancelFailurePercent" type="number" min="0" max="100"/></label>
+                <label>退款失败概率 %<input v-model.number="simulationDraft.refundFailurePercent" type="number" min="0" max="100"/></label>
+              </div>
             </template>
           </fieldset>
         </form>
         <template v-else-if="modal === 'details'">
           <dl class="inventory-details">
-            <div><dt>比赛名称</dt><dd>{{ view?.match.name || '未配置' }}</dd></div><div><dt>比赛 ID</dt><dd>{{ view?.match.id || '—' }}</dd></div><div><dt>比赛状态</dt><dd>{{ view?.match.enabled ? '已启用' : '未启用' }}</dd></div>
+            <div><dt>比赛 ID</dt><dd>{{ view?.match.id || '—' }}</dd></div><div><dt>比赛状态</dt><dd>{{ view?.match.enabled ? '已启用' : '未启用' }}</dd></div>
             <div><dt>座位目录</dt><dd>{{ stadium || '未加载' }}</dd></div><div><dt>比赛时间</dt><dd>{{ time(view?.match.match_at) }}</dd></div><div><dt>开售时间</dt><dd>{{ time(view?.match.sale_at) }}</dd></div><div><dt>时区</dt><dd>北京时间（UTC+8）</dd></div>
             <div><dt>时间校准</dt><dd>{{ view?.clockReady ? `已校准 · 偏差 ${view.offsetMS}ms` : '尚未校准，暂不可启动' }}</dd></div>
           </dl>
-          <label class="sale-stop-toggle"><input type="checkbox" :checked="!!view?.saleStopped" :disabled="saleStopBusy || !view?.match.id" @change="changeSaleStop"/><span>本场已停止售票</span></label>
-          <p class="inventory-help">比赛信息由后台统一配置；停止售票开关仅控制当前客户端，不会修改官方售票状态。</p>
+          <label class="sale-stop-toggle"><input type="checkbox" :checked="!!view?.saleStopped" :disabled="saleStopBusy || !view?.match.id" @change="changeSaleStop"/><span>暂停本客户端购票</span></label>
         </template>
         <div class="task-toast-stack"><TaskToast :message="modal ? inventoryNotice : ''" warning /></div>
       </div>
-      <footer class="inventory-dialog-footer"><button v-if="modal === 'settings'" type="button" :disabled="busy" @click="resetDefaults">恢复默认设置</button><span v-else>比赛信息由云端同步</span><div><button type="button" :disabled="busy" @click="closeModal()">{{ modal === 'settings' ? '取消' : '关闭' }}</button><button v-if="modal === 'settings'" type="submit" form="inventory-settings-form" class="inventory-primary" :disabled="busy">{{ busy ? '保存中…' : '保存设置' }}</button></div></footer>
+      <footer class="inventory-dialog-footer" :class="{ 'details-footer': modal === 'details' }"><button v-if="modal === 'settings'" type="button" :disabled="busy" @click="resetDefaults">恢复默认设置</button><div><button type="button" :disabled="busy" @click="closeModal()">{{ modal === 'settings' ? '取消' : '关闭' }}</button><button v-if="modal === 'settings'" type="submit" form="inventory-settings-form" class="inventory-primary" :disabled="busy">{{ busy ? '保存中…' : '保存设置' }}</button></div></footer>
     </dialog>
   </section>
 </template>
@@ -220,7 +227,7 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
 .inventory-meta{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;font-size:11px;color:var(--app-muted);margin-top:5px}.inventory-meta b{font-weight:400;color:var(--app-ink);font-variant-numeric:tabular-nums}.inventory-sale{color:var(--app-accent);font-variant-numeric:tabular-nums}.inventory-actions{margin-left:auto;display:flex;gap:16px}
 .inventory-panel button.inventory-calibrate{min-height:31px;padding:5px 10px;border:1px solid var(--app-accent);border-radius:6px;background:var(--app-selected);color:var(--app-accent);font-size:12px;font-weight:600}
 .inventory-panel button.inventory-calibrate:hover:not(:disabled){background:var(--app-accent);color:var(--app-on-accent)}
-.inventory-dialog{padding:0;width:540px;max-width:calc(100vw - 32px);max-height:85dvh;border:1px solid var(--app-line);border-radius:10px;background:var(--app-panel);color:var(--app-ink);box-shadow:0 18px 55px var(--app-shadow);font:13px/1.5 'Segoe UI','Microsoft YaHei',sans-serif}.inventory-dialog::backdrop{background:var(--app-backdrop)}.inventory-dialog-head{padding:18px 22px;border-bottom:1px solid var(--app-line);display:flex;align-items:center;justify-content:space-between;gap:16px}.inventory-dialog-head h2{font-size:17px;font-weight:600;margin:0}.inventory-dialog-head p{font-size:12px;color:var(--app-muted);margin:5px 0 0;overflow-wrap:anywhere}.inventory-dialog button{font:inherit;font-size:12px;padding:7px 12px;border:1px solid var(--app-line);border-radius:5px;background:var(--app-panel);color:var(--app-ink)}.inventory-dialog button.inventory-close{border:0;background:transparent;color:var(--app-muted);padding:3px 7px;font-size:20px}.inventory-dialog-content{padding:20px 22px}.inventory-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 16px;border:0;padding:0;margin:0;min-width:0}.inventory-settings label{margin:0;font-size:12px;color:var(--app-muted)}.inventory-settings input{display:block;min-width:0;width:100%;margin-top:7px;padding:9px 10px;border:1px solid var(--app-line);border-radius:5px;color:var(--app-ink);background:var(--app-bg);font:inherit}.inventory-help{margin:16px 0 0!important;font-size:12px;color:var(--app-muted);line-height:1.7}.inventory-details{margin:0}.inventory-details>div{display:grid;grid-template-columns:90px minmax(0,1fr);gap:16px;padding:8px 0;border-bottom:1px solid var(--app-line);font-size:12px}.inventory-details>div:first-child{padding-top:0}.inventory-details dt{color:var(--app-muted)}.inventory-details dd{margin:0;text-align:right;overflow-wrap:anywhere}.inventory-dialog-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 22px;border-top:1px solid var(--app-line);font-size:11px;color:var(--app-muted)}.inventory-dialog-footer>div{display:flex;gap:8px}.inventory-dialog button.inventory-primary{background:var(--app-accent);color:var(--app-on-accent);border-color:var(--app-accent)}
+.inventory-dialog{padding:0;width:540px;max-width:calc(100vw - 32px);max-height:85dvh;border:1px solid var(--app-line);border-radius:10px;background:var(--app-panel);color:var(--app-ink);box-shadow:0 18px 55px var(--app-shadow);font:13px/1.5 'Segoe UI','Microsoft YaHei',sans-serif}.inventory-dialog::backdrop{background:var(--app-backdrop)}.inventory-dialog-head{padding:18px 22px;border-bottom:1px solid var(--app-line);display:flex;align-items:center;justify-content:space-between;gap:16px}.inventory-dialog-head h2{font-size:17px;font-weight:600;margin:0}.inventory-dialog-head p{font-size:12px;color:var(--app-muted);margin:5px 0 0;overflow-wrap:anywhere}.inventory-dialog button{font:inherit;font-size:12px;padding:7px 12px;border:1px solid var(--app-line);border-radius:5px;background:var(--app-panel);color:var(--app-ink)}.inventory-dialog button.inventory-close{border:0;background:transparent;color:var(--app-muted);padding:3px 7px;font-size:20px}.inventory-dialog-content{padding:20px 22px}.inventory-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 16px;border:0;padding:0;margin:0;min-width:0}.inventory-settings label{margin:0;font-size:12px;color:var(--app-muted)}.inventory-settings input{display:block;min-width:0;width:100%;margin-top:7px;padding:9px 10px;border:1px solid var(--app-line);border-radius:5px;color:var(--app-ink);background:var(--app-bg);font:inherit}.inventory-help{margin:16px 0 0!important;font-size:12px;color:var(--app-muted);line-height:1.7}.inventory-details{margin:0}.inventory-details>div{display:grid;grid-template-columns:90px minmax(0,1fr);gap:16px;padding:8px 0;border-bottom:1px solid var(--app-line);font-size:12px}.inventory-details>div:first-child{padding-top:0}.inventory-details dt{color:var(--app-muted)}.inventory-details dd{margin:0;text-align:right;overflow-wrap:anywhere}.inventory-dialog-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 22px;border-top:1px solid var(--app-line);font-size:11px;color:var(--app-muted)}.inventory-dialog-footer>div{display:flex;gap:8px}.inventory-dialog-footer.details-footer{justify-content:flex-end}.inventory-dialog button.inventory-primary{background:var(--app-accent);color:var(--app-on-accent);border-color:var(--app-accent)}
 @container client-workspace (max-width:760px){.inventory-heading{flex-wrap:wrap;gap:8px}.inventory-match{flex:1}.inventory-clock{margin-left:auto}.inventory-meta{gap:6px 12px}}
 @media(pointer:coarse){.inventory-panel button.inventory-calibrate,.inventory-dialog button{min-height:40px}}
 </style>

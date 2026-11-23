@@ -6,7 +6,11 @@ export const router = createRouter({
   routes: [
     { path: '/admin', redirect: '/admin/agents' },
     { path: '/admin/login', component: { render: () => null }, meta: { guestOnly: true } },
+    { path: '/admin/agents/:agentId/terminals/:instance/tasks', name: 'terminal-tasks', component: { render: () => null }, meta: { requiresAuth: true } },
+    { path: '/admin/agents/:agentId', component: { render: () => null }, meta: { requiresAuth: true } },
     { path: '/admin/agents', component: { render: () => null }, meta: { requiresAuth: true } },
+    { path: '/admin/orders/viewers', component: { render: () => null }, meta: { requiresAuth: true } },
+    { path: '/admin/orders', component: { render: () => null }, meta: { requiresAuth: true } },
     { path: '/:pathMatch(.*)*', redirect: '/admin/login' },
   ],
 })

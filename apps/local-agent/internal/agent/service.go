@@ -54,6 +54,8 @@ type Service struct {
 	orderClient       orderSender
 	orderActions      map[string]bool
 	orderDetailWG     sync.WaitGroup
+	cloudSyncMu       sync.Mutex
+	cloudSyncDone     chan struct{}
 	businessRuns      map[int64]*businessRun
 	orderKeys         map[string]*userkey.Cache
 	businessDone      chan struct{}
@@ -97,7 +99,12 @@ func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed
 	s.orderClient = s.businessClient
 	s.businessRuns = map[int64]*businessRun{}
 	s.businessDone = make(chan struct{})
+	s.cloudSyncDone = make(chan struct{})
 	if err := s.tasks.DisableBusiness(); err != nil {
+		cancel()
+		return nil, err
+	}
+	if err := s.recoverCloudSyncQueue(); err != nil {
 		cancel()
 		return nil, err
 	}
@@ -130,6 +137,7 @@ func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed
 	go s.inventoryClockLoop()
 	go s.monitor()
 	go s.businessLoop()
+	go s.cloudSyncLoop()
 	return s, nil
 }
 func (s *Service) useConfig(c protocol.Config) {
@@ -357,6 +365,9 @@ func (s *Service) Close() {
 	<-s.done
 	if s.businessDone != nil {
 		<-s.businessDone
+	}
+	if s.cloudSyncDone != nil {
+		<-s.cloudSyncDone
 	}
 	s.businessWG.Wait()
 	s.inventory.wg.Wait()

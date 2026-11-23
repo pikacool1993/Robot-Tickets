@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestTokenHashMatchesBearerToken(t *testing.T) {
@@ -17,6 +19,34 @@ func TestTokenHashMatchesBearerToken(t *testing.T) {
 	}
 	if got := hashToken(token); !bytes.Equal(got, storedHash) {
 		t.Fatal("stored token hash does not match hash used during bearer authentication")
+	}
+}
+
+func TestEnsureSimulatedOrderColumn(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		count int
+	}{
+		{name: "already exists", count: 1},
+		{name: "upgrade existing database", count: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema\\.COLUMNS").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(tc.count))
+			if tc.count == 0 {
+				mock.ExpectExec("ALTER TABLE agent_orders ADD COLUMN simulated BOOLEAN").WillReturnResult(sqlmock.NewResult(0, 0))
+			}
+			if err := ensureSimulatedOrderColumn(t.Context(), db); err != nil {
+				t.Fatal(err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

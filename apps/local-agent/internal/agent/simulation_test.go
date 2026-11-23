@@ -165,8 +165,8 @@ func TestSimulationNotificationDoesNotReachRealRun(t *testing.T) {
 	s.mu.Unlock()
 }
 
-func TestSimulationStockRandomizesPerAreaAndGroupTotals(t *testing.T) {
-	raw := []byte(`{"code":1,"data":[{"region":1,"usable_count":99,"list":[{"id":1,"usable_count":2},{"id":2,"usable_count":3},{"id":3,"usable_count":4},{"id":4,"usable_count":5},{"id":5,"usable_count":6}]}]}`)
+func TestSimulationStockRandomizesAreasAndOmitsZeroStock(t *testing.T) {
+	raw := []byte(`{"code":1,"data":[{"region":1,"usable_count":99,"list":[{"id":1,"usable_count":2},{"id":2,"usable_count":3},{"id":3,"usable_count":4},{"id":4,"usable_count":5},{"id":5,"usable_count":6},{"id":6,"usable_count":0}]},{"region":2,"usable_count":0,"list":[{"id":7,"usable_count":0}]}]}`)
 	seen := map[string]bool{}
 	for i := 0; i < 40; i++ {
 		result, err := randomizeSimulationStock(raw, true)
@@ -177,6 +177,7 @@ func TestSimulationStockRandomizesPerAreaAndGroupTotals(t *testing.T) {
 			Data []struct {
 				Count int `json:"usable_count"`
 				List  []struct {
+					ID    int `json:"id"`
 					Count int `json:"usable_count"`
 				} `json:"list"`
 			} `json:"data"`
@@ -186,13 +187,11 @@ func TestSimulationStockRandomizesPerAreaAndGroupTotals(t *testing.T) {
 		}
 		group := payload.Data[0]
 		total, active := 0, 0
-		for i, area := range group.List {
+		for _, area := range group.List {
 			total += area.Count
-			if area.Count > 0 {
-				active++
-			}
-			if area.Count < 0 || area.Count > i+3 {
-				t.Fatalf("area %d exceeds its randomized allowance: %s", i, result)
+			active++
+			if area.ID == 6 || area.Count <= 0 || area.Count > area.ID+1 {
+				t.Fatalf("area %d exceeds its randomized allowance: %s", area.ID, result)
 			}
 		}
 		if group.Count != total || active < 2 || active > 4 {
@@ -215,23 +214,44 @@ func TestSimulationOpeningMinuteOverridesAllProbabilities(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(s.root, "config"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	sample := []byte(`{"code":1,"btn_status":1,"data":[{"region":1,"usable_count":123,"list":[{"id":1,"estate":1,"name":"109","price":"100.00","usable_count":123}]}]}`)
+	sample := []byte(`{"code":1,"btn_status":1,"data":[{"region":1,"usable_count":123,"list":[{"id":1,"estate":1,"name":"109","price":"100.00","usable_count":123},{"id":2,"estate":2,"name":"110","price":"100.00","usable_count":0}]}]}`)
 	if err := os.WriteFile(filepath.Join(s.root, "config", "bill-regions.json"), sample, 0600); err != nil {
 		t.Fatal(err)
 	}
+	assertNoZeroStockArea := func(raw []byte) {
+		t.Helper()
+		var payload struct {
+			Data []struct {
+				Count int `json:"usable_count"`
+				List  []struct {
+					ID    int `json:"id"`
+					Count int `json:"usable_count"`
+				} `json:"list"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.Data) != 1 || payload.Data[0].Count != 123 || len(payload.Data[0].List) != 1 || payload.Data[0].List[0].ID != 1 {
+			t.Fatalf("zero-stock area was returned: %s", raw)
+		}
+	}
 	for i := 0; i < 2; i++ {
 		raw, err := s.simulationStock(r.ctx, r.task.ID)
-		if err != nil || string(raw) != string(sample) {
-			t.Fatalf("opening response changed: %s %v", raw, err)
+		if err != nil {
+			t.Fatalf("opening response failed: %s %v", raw, err)
 		}
+		assertNoZeroStockArea(raw)
 	}
 	r.match.SaleAt = time.Now().Add(-2 * time.Minute)
 	if _, err := s.simulationStock(r.ctx, r.task.ID); err == nil {
 		t.Fatal("probability not restored after opening minute")
 	}
 	r.simulationQueries = 0
-	if raw, err := s.simulationStock(r.ctx, r.task.ID); err != nil || string(raw) != string(sample) {
-		t.Fatal("late first query should return full sample")
+	if raw, err := s.simulationStock(r.ctx, r.task.ID); err != nil {
+		t.Fatalf("late first query failed: %v", err)
+	} else {
+		assertNoZeroStockArea(raw)
 	}
 }
 

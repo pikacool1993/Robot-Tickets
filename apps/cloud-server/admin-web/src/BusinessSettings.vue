@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { api } from './api.ts'
-const props = defineProps<{ agentId?: string; agentName?: string }>()
+const props = defineProps<{ agentId?: string; embedded?: boolean }>()
 const emit = defineEmits<{ close: []; unauthorized: [] }>()
 const labels: Record<string, string> = { windows: 'Windows', android: 'Android', ios: 'iOS' }
 const templates = ref<any[]>([])
@@ -58,6 +58,7 @@ async function save() {
   } catch (e) { fail(e) } finally { if (alive) saving.value = false }
 }
 function keydown(event: KeyboardEvent) {
+  if (props.embedded) return
   if (event.key === 'Escape' && !saving.value) { event.preventDefault(); emit('close'); return }
   if (event.key !== 'Tab') return
   const elements = panel.value?.querySelectorAll<HTMLElement>('button:not(:disabled), select:not(:disabled), textarea:not(:disabled)')
@@ -66,23 +67,26 @@ function keydown(event: KeyboardEvent) {
   if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
 }
-onMounted(async () => { await nextTick(); panel.value?.focus(); await load() })
-onUnmounted(() => { alive = false; previousFocus?.focus() })
+onMounted(async () => { await nextTick(); !props.embedded && panel.value?.focus(); await load() })
+onUnmounted(() => { alive = false; !props.embedded && previousFocus?.focus() })
 </script>
 
 <template>
-  <div class="overlay" @keydown="keydown">
-    <section ref="panel" class="modal business-modal" role="dialog" aria-modal="true" aria-labelledby="business-title" tabindex="-1">
-      <button class="close" aria-label="关闭业务设备设置" :disabled="saving" @click="emit('close')">×</button>
-      <h2 id="business-title">{{ agentId ? `业务登录设备 · ${agentName}` : '业务设备模板' }}</h2>
-      <p>{{ agentId ? '选择此代理商所有客户端使用的业务登录设备。' : '三个设备模板全局共用，修改会影响选择该设备的所有代理商。' }}修改仅在下次客户端登录时生效。</p>
+  <div :class="embedded ? 'business-embedded' : 'overlay'" @keydown="keydown">
+    <section ref="panel" :class="embedded ? 'business-inline' : 'modal business-modal'" :role="embedded ? undefined : 'dialog'" :aria-modal="embedded ? undefined : true" :aria-labelledby="embedded ? undefined : 'business-title'" tabindex="-1">
+      <button v-if="!embedded" class="close" aria-label="关闭业务设备设置" :disabled="saving" @click="emit('close')">×</button>
+      <h2 v-if="!embedded" id="business-title">业务设备模板</h2>
+      <p v-if="!agentId">修改模板会在使用该设备的代理商下次登录时生效。</p>
       <p v-if="configStatus" class="config-status">{{ configStatus }}</p>
       <p v-if="loading" role="status">正在加载…</p>
-      <form v-else @submit.prevent="save">
+      <form v-else :class="{ 'device-form': embedded }" @submit.prevent="save">
         <label>设备类型<select v-model="device" :disabled="saving" @change="!agentId && chooseTemplate()"><option v-for="(label, key) in labels" :key="key" :value="key">{{ label }}</option></select></label>
         <template v-if="!agentId">
-          <p class="hint">模板包含 user_agent、referer、e、s、v。code 与 s.deviceId 由客户端生成；iOS 不包含 e.sessionId。切换设备会重新载入已保存模板。</p>
           <label>参数模板（JSON）<textarea v-model="draft" :disabled="saving" spellcheck="false" rows="18" maxlength="65536" required /></label>
+          <details class="template-help">
+            <summary>模板字段说明</summary>
+            <p>模板包含 user_agent、referer、e、s、v。code 和 s.deviceId 由客户端生成，iOS 模板省略 e.sessionId。切换设备会载入该设备已保存的模板。</p>
+          </details>
           <small>当前模板版本：{{ revision }}</small>
         </template>
         <p v-if="error" class="error" role="alert">{{ error }}</p>
@@ -94,9 +98,30 @@ onUnmounted(() => { alive = false; previousFocus?.focus() })
 </template>
 
 <style scoped>
+.business-inline {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+.device-form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.device-form label { flex: 1 1 200px; max-width: 360px; font-size: 13px; }
+.device-form .modal-actions { margin: 0; }
+.device-form > p { width: 100%; margin: 0; }
+.template-help { margin-bottom: 10px; font-size: 13px; color: var(--text-secondary); }
+.template-help summary { cursor: pointer; }
+.template-help p { margin: 8px 0 0; }
+@media (max-width: 720px) {
+  .device-form label { max-width: none; }
+  .device-form .modal-actions { flex: 1 1 100%; }
+}
 .business-modal { width: min(880px, 100%); }
 select, textarea { display: block; width: 100%; margin-top: 8px; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; background: white; color: #172033; }
 textarea { resize: vertical; font: 13px/1.5 Consolas, monospace; min-height: 180px; }
-.hint, .config-status { font-size: 13px; line-height: 1.6; color: #53647a; }
+.config-status { font-size: 13px; line-height: 1.6; color: #53647a; }
 .success { color: #187844; }
 </style>

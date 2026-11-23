@@ -47,7 +47,7 @@ onUnmounted(() => { alive = false; previousFocus?.focus() })
 <template>
   <div class="overlay" @keydown="keydown"><section ref="panel" class="modal match-modal" role="dialog" aria-modal="true" aria-labelledby="match-title" tabindex="-1">
     <button class="close" aria-label="关闭当前比赛设置" :disabled="loading" @click="emit('close')">×</button>
-    <h2 id="match-title">全局当前比赛</h2><p>所有代理商共用。支持官方发布前提前配置；所有时间均为北京时间。</p>
+    <h2 id="match-title">配置当前比赛</h2><p>所有代理商共用此配置。</p>
     <p v-if="loading && !loaded" role="status">正在读取…</p>
     <form @submit.prevent="save">
       <fieldset :disabled="loading || !loaded">

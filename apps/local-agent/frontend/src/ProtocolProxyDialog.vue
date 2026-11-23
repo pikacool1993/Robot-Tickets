@@ -11,11 +11,11 @@ onUnmounted(() => { proxy.value = ''; dialog.value?.close() })
 <template>
 <dialog ref="dialog" class="proxy-dialog" aria-labelledby="proxy-title" @cancel.prevent="!busy && emit('cancel')" @keydown="confirmDialog($event, confirmProxy)">
   <form @submit.prevent="confirmProxy">
-    <header><div><h2 id="proxy-title">{{ protocol === 'yyb' ? 'YYB' : '微信' }}协议代理设置</h2><p>登录前确认 · 留空使用直连</p></div><button type="button" :disabled="busy" aria-label="关闭" @click="emit('cancel')">×</button></header>
+    <header><div><h2 id="proxy-title">{{ protocol === 'yyb' ? 'YYB' : '微信' }}协议代理设置</h2></div><button type="button" :disabled="busy" aria-label="关闭" @click="emit('cancel')">×</button></header>
     <section>
-      <label>代理地址（选填）<input v-model="proxy" :type="reveal ? 'text' : 'password'" autocomplete="off" :disabled="busy" placeholder="http://user:password@host:port"/></label>
+      <label>代理地址<input v-model="proxy" :type="reveal ? 'text' : 'password'" autocomplete="off" :disabled="busy" placeholder="留空时直连"/></label>
       <div class="proxy-row"><button type="button" :disabled="busy" @click="reveal = !reveal">{{ reveal ? '隐藏地址' : '显示地址' }}</button><button type="button" :disabled="busy" @click="proxy = ''">清空，使用直连</button></div>
-      <p>支持 HTTP 代理（可带用户名密码）和无认证 SOCKS5。配置在当前客户端加密保存，两种协议分别配置。</p>
+      <p>支持 HTTP（可带认证）和无认证 SOCKS5。</p>
       <p v-if="restart" class="proxy-warning">当前协议正在运行，代理已改变。继续将重启协议，取消相关请求并暂停关联任务，账号凭据保留。</p>
       <p v-if="error" role="alert" class="proxy-warning">{{ error }}</p>
     </section>

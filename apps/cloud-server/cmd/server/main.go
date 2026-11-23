@@ -50,17 +50,22 @@ func main() {
 	if err := db.PingContext(ctx); err != nil {
 		log.Fatal(err)
 	}
-	sql, err := os.ReadFile("migrations/001_auth.sql")
-	if err != nil {
-		log.Fatal(err)
+	for _, migration := range []string{"migrations/001_auth.sql", "migrations/002_task_order_sync.sql"} {
+		sql, readErr := os.ReadFile(migration)
+		if readErr != nil {
+			log.Fatal(readErr)
+		}
+		for _, statement := range strings.Split(string(sql), ";") {
+			if strings.TrimSpace(statement) == "" {
+				continue
+			}
+			if _, err = db.ExecContext(ctx, statement); err != nil {
+				log.Fatal(err)
+			}
+		}
 	}
-	for _, statement := range strings.Split(string(sql), ";") {
-		if strings.TrimSpace(statement) == "" {
-			continue
-		}
-		if _, err = db.ExecContext(ctx, statement); err != nil {
-			log.Fatal(err)
-		}
+	if err = ensureSimulatedOrderColumn(ctx, db); err != nil {
+		log.Fatal(err)
 	}
 	if err = seedBusinessTemplates(ctx, db); err != nil {
 		log.Fatal(err)
@@ -104,6 +109,12 @@ func main() {
 	mux.HandleFunc("POST /api/admin/v1/agents", s.createAgent)
 	mux.HandleFunc("GET /api/admin/v1/agents", s.listAgents)
 	mux.HandleFunc("GET /api/admin/v1/agents/{id}", s.getAgent)
+	mux.HandleFunc("GET /api/admin/v1/agents/{id}/terminals/{instance}/tasks", s.getTerminalTasks)
+	mux.HandleFunc("GET /api/admin/v1/agents/{id}/orders", s.listAdminOrders)
+	mux.HandleFunc("POST /api/admin/v1/agents/{id}/orders/{order}/reveal-viewers", s.revealOrderViewers)
+	mux.HandleFunc("GET /api/admin/v1/orders", s.listAllAdminOrders)
+	mux.HandleFunc("POST /api/admin/v1/orders/viewer-roster", s.adminViewerRoster)
+	mux.HandleFunc("POST /api/admin/v1/orders/{order}/reveal-viewers", s.revealAllAdminOrderViewers)
 	mux.HandleFunc("PATCH /api/admin/v1/agents/{id}", s.updateAgent)
 	mux.HandleFunc("POST /api/admin/v1/agents/{id}/credential/view", s.viewCredential)
 	mux.HandleFunc("POST /api/admin/v1/agents/{id}/credential/reset", s.resetCredential)
@@ -121,6 +132,9 @@ func main() {
 	mux.HandleFunc("POST /api/agent/v1/auth/login", s.agentLogin)
 	mux.HandleFunc("POST /api/agent/v1/auth/logout", s.agentLogout)
 	mux.HandleFunc("GET /api/agent/v1/auth/me", s.agentMe)
+	mux.HandleFunc("PUT /api/agent/v1/sync/tasks", s.syncTasks)
+	mux.HandleFunc("POST /api/agent/v1/orders", s.syncOrder)
+	mux.HandleFunc("GET /api/agent/v1/orders", s.listAgentOrders)
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
 		addr = ":8080"

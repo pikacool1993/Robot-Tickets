@@ -48,6 +48,11 @@ func TestAgentDetailDevices(t *testing.T) {
 				}
 				query.WillReturnRows(rows)
 				if want == 200 {
+					summaries := sqlmock.NewRows([]string{"client_instance_id", "tasks_synced_at", "authorization_status", "count"})
+					if mode == "active" {
+						summaries.AddRow("instance", created, "online", 2).AddRow("instance", created, "expired", 1)
+					}
+					mock.ExpectQuery("SELECT sync.client_instance_id,sync.tasks_synced_at,t.authorization_status,COUNT\\(t.task_id\\) FROM agent_task_sync_state").WithArgs("agent").WillReturnRows(summaries)
 					mock.ExpectCommit()
 				} else {
 					mock.ExpectRollback()
@@ -84,6 +89,10 @@ func TestAgentDetailDevices(t *testing.T) {
 					}
 					if _, ok := out.Data.Devices[0]["token_hash"]; ok {
 						t.Fatal("session secret exposed")
+					}
+					summary, ok := out.Data.Devices[0]["task_summary"].(map[string]any)
+					if !ok || summary["total"] != float64(3) || summary["online"] != float64(2) || summary["expired"] != float64(1) {
+						t.Fatalf("invalid task summary: %v", summary)
 					}
 				}
 			}

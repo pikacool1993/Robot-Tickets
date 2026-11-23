@@ -4,4 +4,8 @@ local-agent 已确认并落地的正式业务需求统一记录在仓库根目�
 
 仅完整模拟验收的运行规则、响应概率和具体验收步骤单独维护在 [`完整模拟验收说明`](full-simulation-acceptance.md)。
 
+local-agent 与 cloud-server 间的终端任务状态及出票信息同步需求见 [`终端任务状态与出票信息同步需求定稿`](task-status-order-sync-design.md)。
+
+客户端接口使用方式、字段、响应、加密封装和重试规则见仓库根目录 [`cloud-server 客户端同步 API 文档`](../../../apps/cloud-server/docs/client-sync-api.md)。local-agent 已按订单创建后的首次详情结果和任务授权状态变化接入本地持久化同步队列。
+
 实现与验收状态：协议授权、业务登录和观演人刷新已由代理商使用四个账号验收；库存及订单真实服务器联调须等官方出现可售场次后进行。客户端按代理商要求由其自行打包。

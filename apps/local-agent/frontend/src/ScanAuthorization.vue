@@ -15,8 +15,7 @@ const countdown = computed(() => `${String(Math.floor(props.remaining / 60)).pad
 const labels: Record<string, string> = { creating: '正在获取二维码', pending: '等待扫码', scanned: '已扫码，等待手机确认', authorized: '正在确认账号', confirmed: '协议账号已登录', expired: '二维码已过期，请重新获取', timeout: '扫码已超时，请重新获取', cancelled: '扫码已取消', failed: '授权失败，请重试', verification: '需要额外验证，请在微信中完成验证' }
 const statusText = computed(() => props.busy ? '正在获取二维码…' : labels[props.status] || '等待获取二维码')
 const instructions = computed(() => [
-  '请在倒计时结束前使用微信摄像头扫码，长按或截图识别无效。',
-  '可将二维码发送到其他设备后扫码。',
+  '请用微信摄像头扫码，长按或截图识别无效。',
   props.protocol === 'yyb' ? '如提示登录地异常，点击「继续登录」。' : '扫码后可能提示「车载设备登录」，请在手机上确认登录。',
   '登录后请勿在手机上打开「蓉城小程序」，以免账号下线影响后续任务；如误开，请及时告知。',
 ])
@@ -81,7 +80,6 @@ async function copy(withInstructions: boolean) {
 <template>
   <section class="scan-auth" aria-label="扫码授权凭条">
     <div class="scan-paper">
-      <div class="scan-intro"><h3>请使用微信摄像头扫码</h3></div>
       <div class="scan-qr">
         <img v-if="image" :src="image" :alt="`${protocol === 'yyb' ? 'YYB' : '微信'}协议授权二维码`"/>
         <div v-else class="scan-placeholder" role="status">{{ statusText }}</div>
@@ -97,16 +95,13 @@ async function copy(withInstructions: boolean) {
       <p class="scan-feedback" :class="{ 'copy-error': copyError }">{{ feedback }}</p>
     </div>
     <div class="scan-account"><span>{{ loggedIn ? '协议账号已登录' : '协议账号尚未确认' }}</span><span>业务授权尚未完成</span></div>
-    <p class="scan-note">关闭后继续等待，最长 5 分钟；重新打开会重新取码。新授权成功前保留原绑定。</p>
+    <p class="scan-note">关闭后继续等待，最长 5 分钟。重新打开会重新取码。</p>
   </section>
 </template>
 
 <style scoped>
 .scan-auth{font:14px/1.6 'Segoe UI','Microsoft YaHei',sans-serif}
 .scan-auth .scan-paper{background:#fff;color:#182331;border-radius:6px;padding:6px 8px}
-.scan-auth .scan-intro{text-align:center}
-.scan-auth .scan-intro h3{font-size:12px;font-weight:600;margin:0}
-.scan-auth .scan-intro p{font-size:12px;color:#697586;margin:5px 0 0}
 .scan-qr{position:relative;width:320px;max-width:100%;aspect-ratio:1;margin:3px auto 0;background:white}
 .scan-qr img{display:block;width:100%;height:100%;object-fit:contain}
 .scan-placeholder,.scan-overlay{display:flex;align-items:center;justify-content:center;text-align:center;height:100%;padding:20px;font-size:13px;color:#526173}

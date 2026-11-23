@@ -243,6 +243,52 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read devices")
 		return
 	}
+	taskRows, err := tx.QueryContext(r.Context(), "SELECT sync.client_instance_id,sync.tasks_synced_at,t.authorization_status,COUNT(t.task_id) FROM agent_task_sync_state sync LEFT JOIN agent_terminal_tasks t ON t.agent_id=sync.agent_id AND t.client_instance_id=sync.client_instance_id WHERE sync.agent_id=? GROUP BY sync.client_instance_id,sync.tasks_synced_at,t.authorization_status", id)
+	if err != nil {
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read terminal tasks")
+		return
+	}
+	taskSummaries := map[string]map[string]any{}
+	for taskRows.Next() {
+		var instance string
+		var syncedAt time.Time
+		var status sql.NullString
+		var count int
+		if err := taskRows.Scan(&instance, &syncedAt, &status, &count); err != nil {
+			taskRows.Close()
+			s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read terminal tasks")
+			return
+		}
+		summary, exists := taskSummaries[instance]
+		if !exists {
+			summary = map[string]any{"total": 0, "online": 0, "expired": 0, "pending_authorization": 0, "protocol_offline": 0, "maintenance_paused": 0, "unknown": 0, "tasks_synced_at": syncedAt}
+			taskSummaries[instance] = summary
+		}
+		if status.Valid && count > 0 {
+			key := status.String
+			if !taskAuthorizationStatuses[key] {
+				key = "unknown"
+			}
+			summary[key] = summary[key].(int) + count
+			summary["total"] = summary["total"].(int) + count
+		}
+	}
+	if err := taskRows.Err(); err != nil {
+		taskRows.Close()
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read terminal tasks")
+		return
+	}
+	if err := taskRows.Close(); err != nil {
+		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read terminal tasks")
+		return
+	}
+	for _, device := range devices {
+		if summary, ok := taskSummaries[device["client_instance_id"].(string)]; ok {
+			device["task_summary"] = summary
+		} else {
+			device["task_summary"] = nil
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read agent")
 		return

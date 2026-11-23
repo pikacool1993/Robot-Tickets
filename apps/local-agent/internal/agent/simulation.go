@@ -260,6 +260,9 @@ func (s *Service) simulationStock(ctx context.Context, id int64) ([]byte, error)
 	switch {
 	case full:
 		raw, err = readDefaultStock(s.root + "/config/bill-regions.json")
+		if err == nil {
+			raw, err = omitZeroStockAreas(raw)
+		}
 	case roll < settings.SuccessPercent:
 		raw, err = readDefaultStock(s.root + "/config/bill-regions.json")
 		if err == nil {
@@ -318,7 +321,9 @@ func randomizeSimulationStock(raw []byte, returning bool) ([]byte, error) {
 			}
 			maximum := int(numberValue(area["usable_count"]))
 			area["usable_count"] = 0
-			areas = append(areas, areaRef{group: group, area: area, maximum: maximum})
+			if maximum > 0 {
+				areas = append(areas, areaRef{group: group, area: area, maximum: maximum})
+			}
 		}
 	}
 	active := 0
@@ -361,6 +366,59 @@ func randomizeSimulationStock(raw []byte, returning bool) ([]byte, error) {
 		entry.group["usable_count"] = numberValue(entry.group["usable_count"]) + float64(count)
 	}
 	payload["code"], payload["btn_status"], payload["btn_text"] = 1, 1, "立即购买"
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return omitZeroStockAreas(encoded)
+}
+
+func omitZeroStockAreas(raw []byte) ([]byte, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	data, ok := payload["data"].([]any)
+	if !ok {
+		return raw, nil
+	}
+	changed := false
+	filteredData := make([]any, 0, len(data))
+	for _, groupValue := range data {
+		group, ok := groupValue.(map[string]any)
+		if !ok {
+			filteredData = append(filteredData, groupValue)
+			continue
+		}
+		areas, ok := group["list"].([]any)
+		if !ok {
+			filteredData = append(filteredData, groupValue)
+			continue
+		}
+		filtered := make([]any, 0, len(areas))
+		for _, areaValue := range areas {
+			area, ok := areaValue.(map[string]any)
+			if ok {
+				if number, isNumber := area["usable_count"].(float64); isNumber && number == 0 {
+					changed = true
+					continue
+				}
+			}
+			filtered = append(filtered, areaValue)
+		}
+		if len(filtered) != len(areas) {
+			group["list"] = filtered
+		}
+		if len(filtered) == 0 && numberValue(group["usable_count"]) == 0 {
+			changed = true
+			continue
+		}
+		filteredData = append(filteredData, groupValue)
+	}
+	if !changed {
+		return raw, nil
+	}
+	payload["data"] = filteredData
 	return json.Marshal(payload)
 }
 
