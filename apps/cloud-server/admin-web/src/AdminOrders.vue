@@ -9,7 +9,7 @@ const route = useRoute(), router = useRouter()
 const queryString = (key: string) => typeof route.query[key] === 'string' ? route.query[key] as string : ''
 const initialFilters = () => ({ agent_id: queryString('agent_id'), client_number: queryString('client_number'), match_id: queryString('match_id') })
 const agents = ref<{ id: string; name: string }[]>([])
-const orders = ref<CloudOrder[]>([])
+const orders = ref<(CloudOrder & { viewerNames: string })[]>([])
 const total = ref(0)
 const page = ref(Math.max(1, Math.min(100000, Number(queryString('page')) || 1)))
 const pageSize = ref([50, 100, 200].includes(Number(queryString('limit'))) ? Number(queryString('limit')) : 50)
@@ -33,7 +33,11 @@ async function search(apply = false) {
   revealing.value = {}
   try {
     const data = await api.adminOrders({ ...appliedFilters.value, page: page.value, limit: pageSize.value })
-    orders.value = data.items || []; total.value = data.total || 0
+    orders.value = (data.items || []).map((order: CloudOrder) => ({
+      ...order,
+      viewerNames: (order.viewers || []).map(viewer => viewer.name).join('、')
+    }))
+    total.value = data.total || 0
     await router.replace({ path: '/admin/orders', query: query() })
   } catch (e) { error.value = e instanceof Error ? e.message : '订单查询失败' }
   finally { loading.value = false }
@@ -87,8 +91,7 @@ onMounted(() => {
           <span v-else>座位未获取</span>
         </td>
         <td data-label="观演人">
-          <div v-for="(viewer, index) in order.viewers" :key="index" class="order-line" :title="viewer.name">{{ viewer.name }}</div>
-          <span v-if="!order.viewers?.length">—</span>
+          <div>{{ order.viewerNames || '—' }}</div>
         </td>
         <td data-label="联系方式">
           <div v-for="(viewer, index) in order.viewers" :key="index" class="order-line">

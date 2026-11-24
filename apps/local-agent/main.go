@@ -241,3 +241,6 @@ func (a *App) SyncInventoryClock() error                { return a.service.SyncI
 func (a *App) StartInventory(id int64) error            { return a.service.StartInventory(id) }
 func (a *App) StopInventory(id int64) error             { return a.service.StopInventory(id) }
 func (a *App) SaveTaskCross(id int64, value bool) error { return a.service.SaveTaskCross(id, value) }
+func (a *App) SaveTaskSeatRelaxation(id int64, enabled bool, afterSec int64) error {
+	return a.service.SaveTaskSeatRelaxation(id, enabled, afterSec)
+}

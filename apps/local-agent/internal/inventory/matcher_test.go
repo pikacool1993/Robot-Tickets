@@ -39,6 +39,20 @@ func TestMatcherSnapshotAndFreshStock(t *testing.T) {
 	}
 }
 
+func TestPriceMatcherUsesSelectedRangeInclusively(t *testing.T) {
+	c := tasks.Catalog{Tiers: []tasks.Tier{
+		{Tier: "A", Price: 100, Areas: []tasks.Area{{Code: "selected-a", IsSaleable: true}, {Code: "other-a", IsSaleable: true}}},
+		{Tier: "B", Price: 200, Areas: []tasks.Area{{Code: "selected-b", IsSaleable: true}}},
+		{Tier: "C", Price: 250, Areas: []tasks.Area{{Code: "too-high", IsSaleable: true}}},
+	}}
+	task := tasks.Task{Mode: "area", Selected: []string{"selected-a", "selected-b"}}
+	rs := []Region{region("other-a", 1), region("selected-b", 1), region("too-high", 1)}
+	got := NewPriceMatcher(c, task).Candidates(rs)
+	if len(got) != 2 || got[0].Name != "other-a" || got[1].Name != "selected-b" {
+		t.Fatalf("unexpected price-range candidates: %+v", got)
+	}
+}
+
 func TestCompiledMatchPreservesSelection(t *testing.T) {
 	c, task := fixture()
 	rs := []Region{region("109", 3), region("110", 2), region("111", 1), region("101", 3), region("102", 2)}

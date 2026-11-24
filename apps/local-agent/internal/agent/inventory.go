@@ -526,6 +526,21 @@ func (s *Service) SaveTaskCross(id int64, value bool) error {
 	return s.tasks.SaveCross(id, value)
 }
 
+func (s *Service) SaveTaskSeatRelaxation(id int64, enabled bool, afterSec int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireTaskSession(); err != nil {
+		return err
+	}
+	if err := s.tasks.SaveSeatRelaxation(id, enabled, afterSec); err != nil {
+		return err
+	}
+	if r := s.inventory.runs[id]; r != nil {
+		r.task.RelaxSeats, r.task.RelaxAfterSec = enabled, afterSec
+	}
+	return nil
+}
+
 // Accessed under s.mu. Production runs compile at startup; lazy construction
 // also supports runs restored/constructed by internal callers.
 func (r *inventoryRun) stockMatcher() *inventory.Matcher {
@@ -574,7 +589,11 @@ func (s *Service) deliverInventoryLocked(source int64, regions []inventory.Regio
 		if (r.status != "monitoring" && !(r.status == "waiting" && !s.calibratedNowLocked().Before(r.queryAt))) || !s.validInventoryLocked(id, r) {
 			continue
 		}
-		plan, ok := r.stockMatcher().Match(regions, len(r.task.PeopleSelected), r.task.AllowCross, nil)
+		matcher := r.stockMatcher()
+		if r.task.RelaxSeats && !at.Before(r.match.SaleAt.Add(time.Duration(r.task.RelaxAfterSec)*time.Second)) {
+			matcher = inventory.NewPriceMatcher(r.catalog, r.task)
+		}
+		plan, ok := matcher.Match(regions, len(r.task.PeopleSelected), r.task.AllowCross, nil)
 		if !ok {
 			continue
 		}

@@ -15,11 +15,10 @@ import (
 )
 
 func TestAdminViewerRoster(t *testing.T) {
-	for _, mode := range []string{"all", "filtered", "confirmation", "audit-failure", "read-failure", "unauthorized"} {
+	for _, mode := range []string{"all", "filtered", "read-failure", "unauthorized"} {
 		t.Run(mode, func(t *testing.T) {
 			s, mock := syncFixture(t)
 			url := "/api/admin/v1/orders/viewer-roster?page=2&limit=50"
-			body := `{"confirm":true}`
 			want := 200
 			if mode == "filtered" {
 				url += "&agent_id=agent&client_number=A01&match_id=match"
@@ -30,11 +29,7 @@ func TestAdminViewerRoster(t *testing.T) {
 			} else {
 				expectAdmin(mock)
 			}
-			if mode == "confirmation" {
-				body = `{"confirm":false}`
-				want = 400
-			}
-			if mode != "confirmation" && mode != "unauthorized" {
+			if mode != "unauthorized" {
 				cipher, nonce, err := auth.SealSecret(s.credentialKey, `[{"name":"同名观演人","phone":"13800000000"}]`)
 				if err != nil {
 					t.Fatal(err)
@@ -50,7 +45,12 @@ func TestAdminViewerRoster(t *testing.T) {
 					q.WithArgs()
 				}
 				rows := sqlmock.NewRows([]string{"ciphertext", "nonce", "version"})
-				for i := 0; i < 205; i++ {
+				multi, multiNonce, err := auth.SealSecret(s.credentialKey, `[{"name":"同名观演人"},{"name":"第二位"}]`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rows.AddRow(multi, multiNonce, "v1")
+				for i := 1; i < 205; i++ {
 					rows.AddRow(cipher, nonce, "v1")
 				}
 				if mode == "read-failure" {
@@ -58,33 +58,32 @@ func TestAdminViewerRoster(t *testing.T) {
 					want = 500
 				}
 				q.WillReturnRows(rows).RowsWillBeClosed()
-				if mode != "read-failure" {
-					audit := mock.ExpectExec("INSERT INTO audit_events.*order_viewer_roster_viewed").WithArgs("admin", sqlmock.AnyArg(), sqlmock.AnyArg())
-					if mode == "audit-failure" {
-						audit.WillReturnError(errors.New("audit failed"))
-						want = 500
-					} else {
-						audit.WillReturnResult(sqlmock.NewResult(1, 1))
-					}
-				}
 			}
 			w := httptest.NewRecorder()
-			s.adminViewerRoster(w, httptest.NewRequest("POST", url, bytes.NewBufferString(body)))
+			s.adminViewerRoster(w, httptest.NewRequest("POST", url, nil))
 			if w.Code != want {
 				t.Fatalf("status=%d: %s", w.Code, w.Body)
 			}
 			if want == 200 {
 				var result struct {
 					Data struct {
-						Names  []string `json:"names"`
-						Orders int      `json:"order_count"`
+						Groups []struct {
+							Names []string `json:"names"`
+						} `json:"groups"`
+						Orders int `json:"order_count"`
 					} `json:"data"`
 				}
 				if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 					t.Fatal(err)
 				}
-				if len(result.Data.Names) != 205 || result.Data.Orders != 205 {
-					t.Fatal("roster truncated or deduplicated")
+				if len(result.Data.Groups) != 205 || result.Data.Orders != 205 {
+					t.Fatal("expected one roster entry per order")
+				}
+				if got := strings.Join(result.Data.Groups[0].Names, "、"); got != "同名观演人、第二位" {
+					t.Fatalf("unexpected names for first order: %q", got)
+				}
+				if len(result.Data.Groups[1].Names) != 1 {
+					t.Fatal("the next order must stay separate")
 				}
 				if bytes.Contains(w.Body.Bytes(), []byte("13800000000")) {
 					t.Fatal("roster leaked phone")
@@ -93,7 +92,7 @@ func TestAdminViewerRoster(t *testing.T) {
 					t.Fatal("missing no-store")
 				}
 			} else if bytes.Contains(w.Body.Bytes(), []byte("同名观演人")) {
-				t.Fatal("names returned without successful audit")
+				t.Fatal("names returned after failed request")
 			}
 		})
 	}

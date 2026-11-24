@@ -52,7 +52,7 @@ export const api = {
   revealOrderViewers: (id: string, orderId: number) => request(`/agents/${id}/orders/${orderId}/reveal-viewers`, 'POST', { confirm: true }),
   adminOrders: (filters: Record<string, string | number>) => { const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => String(value) !== '').map(([key, value]) => [key, String(value)])); return request(`/orders?${query}`) },
   revealAdminOrderViewers: (orderId: number) => request(`/orders/${orderId}/reveal-viewers`, 'POST', { confirm: true }),
-  viewerRoster: (filters: Record<string, string>) => { const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '')); return request(`/orders/viewer-roster?${query}`, 'POST', { confirm: true }) },
+  viewerRoster: (filters: Record<string, string>) => { const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '')); return request(`/orders/viewer-roster?${query}`, 'POST') },
   resetCredential: (id: string) => request(`/agents/${id}/credential/reset`, 'POST', {}),
   setStatus: (id: string, status: string) => request(`/agents/${id}/status`, 'PATCH', { status }),
   setLimit: (id: string, max_devices: number) => request(`/agents/${id}/device-limit`, 'PATCH', { max_devices }),

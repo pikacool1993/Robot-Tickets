@@ -34,8 +34,15 @@ async function main() {
       else if (url.pathname.endsWith('/orders/1/reveal-viewers')) data = { order_id: 'order-1', viewers: [{ name: '测试姓名', phone: '13800000000' }] }
       else if (url.pathname.endsWith('/orders/viewer-roster')) {
         assert.equal(route.request().method(), 'POST')
-        assert.deepEqual(route.request().postDataJSON(), { confirm: true })
-        data = { names: Array.from({ length: 240 }, (_, i) => i < 2 ? '同名观演人' : `观演人${i + 1}`), order_count: 205 }
+        assert.equal(route.request().postData(), null)
+        const fetchCount = calls.filter(call => call.includes('/orders/viewer-roster')).length
+        if (fetchCount === 2) {
+          await route.fulfill({ status: 500, json: { message: '刷新失败' } })
+          return
+        }
+        const groups = Array.from({ length: 205 }, (_, i) => ({ names: i === 0 ? ['同名观演人', '第二位'] : [`观演人${i + 1}`] }))
+        if (fetchCount === 3) groups.unshift({ names: Array.from({ length: 30 }, (_, i) => `新增观演人${i + 1}`) })
+        data = { groups, order_count: groups.length }
       }
       else if (url.pathname.endsWith('/orders')) data = { items: [{ id: 1, order_id: 'SIM-order-1', simulated: true, agent_name: '测试代理商', task_id: 101, client_number: 'A01', match_id: 'match-123', match_name: '测试场次名称', created_at: '2026-11-23T06:30:00Z', payment_deadline: '2026-11-23T07:00:00Z', ticket_count: 2, tiers: ['A区'], seats: [{ tier: 'A区', row: 3, seat: 5 }, { tier: 'A区', row: 3, seat: 6 }], viewers: [{ name: '测试姓名', phone: '138****0000' }], detail_status: 'unavailable' }], total: 205, page: Number(url.searchParams.get('page')), limit: Number(url.searchParams.get('limit')) }
       else if (url.pathname.endsWith('/agents/a1')) data = agent
@@ -62,12 +69,28 @@ async function main() {
     await page.getByLabel('终端编号').fill('UNAPPLIED')
     if (process.env.SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.SCREENSHOT_DIR, 'orders-desktop.png'), fullPage: true })
     await page.getByRole('button', { name: '观演人名单', exact: true }).click()
-    assert.equal(calls.some(url => url.includes('/orders/viewer-roster')), false)
-    await page.getByRole('button', { name: '确认查看名单', exact: true }).click()
     await page.locator('.roster-names li').last().waitFor()
-    assert.equal(await page.locator('.roster-names li').count(), 240)
-    assert.equal(await page.getByText('同名观演人', { exact: true }).count(), 2)
-    assert.equal(await page.locator('aside, header, button').count(), 0)
+    assert.equal(await page.locator('.roster-names li').count(), 100)
+    assert.equal(await page.locator('.roster-names li').first().locator('span').last().innerText(), '同名观演人、第二位')
+    assert.equal(await page.locator('aside, header').count(), 0)
+    const refresh = page.getByRole('button', { name: '刷新', exact: true })
+    const rosterURL = page.url()
+    await refresh.click()
+    await page.getByRole('alert').filter({ hasText: '刷新失败' }).waitFor()
+    assert.equal(await page.locator('.roster-names li').count(), 100)
+    await refresh.click()
+    await page.getByText(/新增观演人30/).waitFor()
+    await page.getByRole('button', { name: '下一页', exact: true }).click()
+    assert.equal(await page.locator('.roster-number').first().innerText(), '101')
+    await page.getByLabel('每页').selectOption('200')
+    assert.equal(await page.locator('.roster-names li').count(), 200)
+    assert.equal(await page.locator('.roster-number').first().innerText(), '1')
+    await page.getByLabel('每页').selectOption('400')
+    assert.equal(await page.locator('.roster-names li').count(), 206)
+    assert.equal(page.url(), rosterURL)
+    const rosterRequests = calls.filter(call => call.includes('/orders/viewer-roster'))
+    assert.equal(rosterRequests.length, 3)
+    assert(rosterRequests.every(call => call === rosterRequests[0]))
     assert.equal((await page.locator('.viewer-roster').innerText()).includes('13800000000'), false)
     const rosterCall = new URL(calls.find(url => url.includes('/orders/viewer-roster')), 'http://test')
     assert.equal(rosterCall.searchParams.get('client_number'), 'A01')
@@ -78,6 +101,8 @@ async function main() {
     if (process.env.SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.SCREENSHOT_DIR, 'roster-desktop.png'), fullPage: true })
     await page.setViewportSize({ width: 390, height: 844 })
     assert.equal(await page.locator('.roster-names').evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length), 1)
+    assert((await page.locator('.roster-names li').first().boundingBox()).height > 24)
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
     if (process.env.SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.SCREENSHOT_DIR, 'roster-mobile.png'), fullPage: true })
     await page.keyboard.press('Escape')
     await page.getByText('SIM-order-1', { exact: true }).waitFor()

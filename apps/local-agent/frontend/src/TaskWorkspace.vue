@@ -127,6 +127,7 @@ async function recoverRun(id: number, status?: string) {
  catch (e) { error.value = `任务 ${id}：${failure(e)}` } finally { executionBusy.value = executionBusy.value.filter(item => item !== id) }
 }
 const crossSaving = ref(false), crossError = ref('')
+const relaxSaving = ref(false), relaxError = ref('')
 async function setCross(task: Task, value: boolean) {
  if (crossSaving.value || saving.value || running(task.id)) return
  crossSaving.value = true; crossError.value = ''
@@ -136,6 +137,13 @@ async function setCross(task: Task, value: boolean) {
   if (current) current.allowCross = value
  } catch (e) { if (alive) crossError.value = failure(e) }
  finally { crossSaving.value = false; if (alive) await pollProtocol() }
+}
+async function setSeatRelaxation(task: Task, enabled: boolean, afterSec = Number(task.relaxAfterSec || 0)) {
+ if (relaxSaving.value) return
+ relaxSaving.value = true; relaxError.value = ''
+ try { await backend().SaveTaskSeatRelaxation(task.id, enabled, Math.max(0, Math.min(86400, Math.floor(afterSec)))); task.relaxSeats = enabled; task.relaxAfterSec = afterSec }
+ catch (e) { if (alive) relaxError.value = failure(e) }
+ finally { relaxSaving.value = false; if (alive) await pollProtocol() }
 }
 const props = defineProps<{ state: State; page: 'tasks' | 'orders' }>()
 watch(() => props.page, page => { if (page === 'orders') { orderSearch.value=''; void showOrders() } })
@@ -534,9 +542,15 @@ async function deleteTask() {
             <div v-if="view.configError" class="tw-alert">{{ view.configError }}</div>
             <div class="tw-switch" role="group" aria-label="座位选择模式"><button :aria-pressed="draft.mode === 'tier'" :disabled="!!view.configError || crossSaving" @click="setMode('tier')">指定票类</button><button :aria-pressed="draft.mode === 'area'" :disabled="!!view.configError || crossSaving" @click="setMode('area')">固定区域</button></div>
             <div class="tw-cross-setting">
-              <div><strong>允许跨区域</strong><small>开启后可跨区域、跨票类凑齐全部观演人数，仅使用已选座位范围。</small></div>
+              <div><strong>跨区凑单</strong><small>在已选范围内组合多个区域。</small></div>
               <button type="button" role="switch" aria-label="允许跨区域" :aria-checked="!!active.allowCross" class="tw-cross-toggle" :class="{ enabled: active.allowCross }" :disabled="crossSaving || saving || running(active.id)" @click="setCross(active, !active.allowCross)"><span aria-hidden="true"></span></button>
             </div>
+            <div class="tw-cross-setting">
+              <div class="tw-relax-copy"><strong>按价格放宽区域</strong><small>触发后按所选区域的价格范围匹配。</small></div>
+              <label class="tw-relax-time"><span>开票后</span><input type="number" min="0" max="86400" step="1" aria-label="开票后触发秒数" :disabled="relaxSaving" :value="active.relaxAfterSec || 0" @change="setSeatRelaxation(active, !!active.relaxSeats, Number(($event.target as HTMLInputElement).value))" /><span>秒触发</span></label>
+              <button type="button" role="switch" aria-label="库存不足时放宽座位区域" :aria-checked="!!active.relaxSeats" class="tw-cross-toggle" :class="{ enabled: active.relaxSeats }" :disabled="relaxSaving" @click="setSeatRelaxation(active, !active.relaxSeats)"><span aria-hidden="true"></span></button>
+            </div>
+            <p v-if="relaxError" class="tw-alert" role="alert">{{ relaxError }}</p>
             <p v-if="crossError" class="tw-alert" role="alert">{{ crossError }} <button type="button" :disabled="crossSaving || saving" @click="setCross(active, !active.allowCross)">重试保存跨区域设置</button></p>
             <fieldset :disabled="!!view.configError || crossSaving" class="tw-options" aria-label="座位选项">
               <template v-if="draft.mode === 'tier'"><div class="tw-tier-options"><label v-for="tier in view.catalog.tiers" :key="tier.tier" class="tw-choice" :class="{ checked: draft.selected.includes(tier.tier) }"><input type="checkbox" :checked="draft.selected.includes(tier.tier)" @change="toggle(tier.tier, ($event.target as HTMLInputElement).checked)"/><span>{{ tier.tier }}<small>¥{{ tier.price }}</small></span></label></div><p v-if="!view.catalog.tiers.length" class="tw-note">暂无可选票类。</p></template>
@@ -666,6 +680,16 @@ async function deleteTask() {
 .tw button.tw-cross-toggle{flex-shrink:0;position:relative;width:38px;height:22px;border-radius:12px;padding:2px;background:var(--soft);border-color:var(--line)}
 .tw button.tw-cross-toggle span{display:block;width:16px;height:16px;border-radius:50%;background:var(--muted);transition:transform .15s}
 .tw button.tw-cross-toggle.enabled{background:var(--active);border-color:var(--active)}.tw button.tw-cross-toggle.enabled span{transform:translateX(16px);background:var(--app-on-accent)}
+.tw-dialog-content:has(.tw-options){display:flex;flex-direction:column;gap:12px}
+.tw-dialog-content:has(.tw-options) .tw-switch{margin:0;align-self:flex-start}
+.tw-dialog-content:has(.tw-options) .tw-cross-setting{margin:0;padding:10px 0;gap:16px}
+.tw-dialog-content:has(.tw-options) .tw-cross-setting small{margin-top:3px}
+.tw-relax-copy{flex:1}
+.tw-relax-time{display:flex;align-items:center;gap:6px;flex:none;font-size:12px;color:var(--muted)}
+.tw-relax-time input{width:76px;height:30px;box-sizing:border-box;padding:4px 7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font:inherit;text-align:right}
+.tw-dialog-content:has(.tw-options) .tw-alert{margin:0}
+.tw-dialog-content:has(.tw-options) .tw-area-group+.tw-area-group{margin-top:12px}
+.tw-dialog-content:has(.tw-options) .tw-group-heading{margin-bottom:8px}
 </style>
 
 <style scoped>

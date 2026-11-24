@@ -129,29 +129,64 @@ func Candidates(regions []Region, c tasks.Catalog, t tasks.Task) []Region {
 // run; live quantities and allocation choices are evaluated for every response.
 // Its zero value permits no areas.
 type Matcher struct {
-	allowed map[string]string
+	allowed     map[string]string
+	regionTiers map[string]string
+	tierPrices  map[string]float64
+	priceMin    float64
+	priceMax    float64
+	priceRange  bool
 }
 
 func NewMatcher(c tasks.Catalog, t tasks.Task) *Matcher {
 	allowed := map[string]string{}
+	regionTiers := map[string]string{}
+	tierPrices := map[string]float64{}
 	selected := map[string]bool{}
+	minPrice, maxPrice := math.MaxFloat64, -math.MaxFloat64
 	for _, v := range t.Selected {
 		selected[strings.ToLower(v)] = true
 	}
 	for _, tier := range c.Tiers {
+		tierPrices[tier.Tier] = tier.Price
+		chosenTier := t.Mode == "tier" && selected[strings.ToLower(tier.Tier)]
 		for _, a := range tier.Areas {
-			if a.IsSaleable && ((t.Mode == "tier" && selected[strings.ToLower(tier.Tier)]) || (t.Mode == "area" && selected[strings.ToLower(a.Code)])) {
+			if a.IsSaleable {
+				regionTiers[strings.ToLower(a.Code)] = tier.Tier
+			}
+			chosenArea := t.Mode == "area" && selected[strings.ToLower(a.Code)]
+			if a.IsSaleable && (chosenTier || chosenArea) {
 				allowed[strings.ToLower(a.Code)] = tier.Tier
+				if tier.Price < minPrice {
+					minPrice = tier.Price
+				}
+				if tier.Price > maxPrice {
+					maxPrice = tier.Price
+				}
 			}
 		}
 	}
-	return &Matcher{allowed: allowed}
+	return &Matcher{allowed: allowed, regionTiers: regionTiers, tierPrices: tierPrices, priceMin: minPrice, priceMax: maxPrice, priceRange: len(allowed) > 0}
+}
+
+func NewPriceMatcher(c tasks.Catalog, t tasks.Task) *Matcher {
+	m := NewMatcher(c, t)
+	m.allowed = nil
+	return m
 }
 
 func (m *Matcher) Candidates(regions []Region) []Region {
 	out := []Region{}
 	for _, r := range regions {
-		if tier, ok := m.allowed[strings.ToLower(r.Name)]; ok && r.Count > 0 {
+		tier, ok := m.allowed[strings.ToLower(r.Name)]
+		if m.allowed == nil && m.priceRange {
+			catalogTier, known := m.regionTiers[strings.ToLower(r.Name)]
+			price := m.tierPrices[catalogTier]
+			if known && price >= m.priceMin && price <= m.priceMax {
+				ok = true
+				tier = "relaxed"
+			}
+		}
+		if ok && r.Count > 0 {
 			r.Tier = tier
 			out = append(out, r)
 		}

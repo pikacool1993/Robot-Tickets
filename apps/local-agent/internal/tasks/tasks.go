@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -53,6 +54,8 @@ type ShippingAddress struct {
 }
 type Task struct {
 	AllowCross      bool             `json:"allowCross"`
+	RelaxSeats      bool             `json:"relaxSeats,omitempty"`
+	RelaxAfterSec   int64            `json:"relaxAfterSec,omitempty"`
 	BusinessStatus  string           `json:"businessStatus"`
 	BusinessMessage string           `json:"businessMessage"`
 	People          []PersonView     `json:"people"`
@@ -497,6 +500,28 @@ func (s *Service) SaveCross(id int64, value bool) error {
 		if next.Tasks[i].ID == id {
 			next.Tasks[i].AllowCross = value
 			addLog(&next.Tasks[i], "info", "已更新跨区域凑单设置")
+			return s.commit(next)
+		}
+	}
+	return errors.New("任务不存在")
+}
+
+func (s *Service) SaveSeatRelaxation(id int64, enabled bool, afterSec int64) error {
+	if afterSec < 0 || afterSec > 86400 {
+		return errors.New("触发时间须在开票后 0 至 24 小时之间")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.clone()
+	for i := range next.Tasks {
+		if next.Tasks[i].ID == id {
+			t := &next.Tasks[i]
+			t.RelaxSeats, t.RelaxAfterSec = enabled, afterSec
+			label := "已关闭库存不足时放宽区域"
+			if enabled {
+				label = fmt.Sprintf("已设置开票后 %d 秒放宽座位区域", afterSec)
+			}
+			addLog(t, "info", label)
 			return s.commit(next)
 		}
 	}

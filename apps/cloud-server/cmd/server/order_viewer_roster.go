@@ -25,18 +25,7 @@ func orderRosterScope(query url.Values) (string, []any) {
 }
 
 func (s *Server) adminViewerRoster(w http.ResponseWriter, r *http.Request) {
-	admin, ok := s.adminKey(w, r)
-	if !ok {
-		return
-	}
-	var in struct {
-		Confirm bool `json:"confirm"`
-	}
-	if !s.adminRequest(w, r, s.adminKeyID, &in) {
-		return
-	}
-	if !in.Confirm {
-		s.adminFailure(w, 400, s.adminKeyID, "confirmation_required", "Explicit confirmation is required")
+	if _, ok := s.adminKey(w, r); !ok {
 		return
 	}
 	where, args := orderRosterScope(r.URL.Query())
@@ -46,8 +35,10 @@ func (s *Server) adminViewerRoster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	names := []string{}
-	orderCount := 0
+	type rosterGroup struct {
+		Names []string `json:"names"`
+	}
+	groups := []rosterGroup{}
 	for rows.Next() {
 		var ciphertext, nonce []byte
 		var version string
@@ -61,10 +52,11 @@ func (s *Server) adminViewerRoster(w http.ResponseWriter, r *http.Request) {
 			s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read viewer roster")
 			return
 		}
+		names := make([]string, 0, len(viewers))
 		for _, viewer := range viewers {
 			names = append(names, viewer.Name)
 		}
-		orderCount++
+		groups = append(groups, rosterGroup{Names: names})
 	}
 	if err := rows.Err(); err != nil {
 		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read viewer roster")
@@ -74,11 +66,6 @@ func (s *Server) adminViewerRoster(w http.ResponseWriter, r *http.Request) {
 		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read viewer roster")
 		return
 	}
-	details := map[string]any{"agent_id": strings.TrimSpace(r.URL.Query().Get("agent_id")), "client_number": strings.TrimSpace(r.URL.Query().Get("client_number")), "match_id": strings.TrimSpace(r.URL.Query().Get("match_id")), "order_count": orderCount, "viewer_count": len(names)}
-	if _, err := s.db.ExecContext(r.Context(), "INSERT INTO audit_events(actor_type,actor_admin_id,event_type,source_ip,result,details) VALUES('admin',?,'order_viewer_roster_viewed',?,'success',?)", admin, clientIP(r), jsonBytes(details)); err != nil {
-		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to audit viewer access")
-		return
-	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", map[string]any{"names": names, "order_count": orderCount}})
+	s.adminRespond(w, 200, s.adminKeyID, payload{"ok", "", map[string]any{"groups": groups, "order_count": len(groups)}})
 }
