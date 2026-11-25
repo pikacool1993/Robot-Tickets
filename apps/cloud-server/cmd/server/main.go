@@ -50,7 +50,7 @@ func main() {
 	if err := db.PingContext(ctx); err != nil {
 		log.Fatal(err)
 	}
-	for _, migration := range []string{"migrations/001_auth.sql", "migrations/002_task_order_sync.sql"} {
+	for _, migration := range []string{"migrations/001_auth.sql", "migrations/002_task_order_sync.sql", "migrations/003_feishu.sql"} {
 		sql, readErr := os.ReadFile(migration)
 		if readErr != nil {
 			log.Fatal(readErr)
@@ -129,6 +129,9 @@ func main() {
 	mux.HandleFunc("PUT /api/admin/v1/business-device-templates/{device}", s.saveBusinessTemplate)
 	mux.HandleFunc("GET /api/admin/v1/agents/{id}/business-config", s.getAgentBusinessConfig)
 	mux.HandleFunc("PUT /api/admin/v1/agents/{id}/business-config", s.saveAgentBusinessConfig)
+	mux.HandleFunc("GET /api/admin/v1/agents/{id}/feishu-config", s.getAgentFeishuConfig)
+	mux.HandleFunc("PUT /api/admin/v1/agents/{id}/feishu-config", s.saveAgentFeishuConfig)
+	mux.HandleFunc("GET /api/agent/v1/feishu-config", s.getClientFeishuConfig)
 	mux.HandleFunc("GET /api/admin/v1/current-match", s.getCurrentMatch)
 	mux.HandleFunc("PUT /api/admin/v1/current-match", s.saveCurrentMatch)
 	mux.HandleFunc("GET /api/agent/v1/time", s.serverTime)

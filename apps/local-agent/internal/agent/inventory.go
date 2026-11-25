@@ -17,6 +17,7 @@ import (
 )
 
 type inventoryRun struct {
+	feishuBlocked     bool
 	simulationQueries int
 	simulated         bool
 	queryAt           time.Time

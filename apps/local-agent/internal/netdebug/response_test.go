@@ -19,10 +19,10 @@ func TestResponsesRetainInventoryAndRedactNestedSecrets(t *testing.T) {
 	var taskLogs []string
 	ctx := WithTask(context.Background(), 7, func(s string) { taskLogs = append(taskLogs, s) })
 	inner := base64.StdEncoding.EncodeToString([]byte(`{"err_no":0,"data":"{\"encrypt_key\":\"test-secret-key\",\"iv\":\"test-secret-iv\",\"version\":56,\"expire_in\":49}"}`))
-	raw, _ := json.Marshal(map[string]any{"code": 1, "token": "secret-token", "data": inner, "price": "180.00", "id": json.Number("9007199254740993"), "usable_count": 0})
+	raw, _ := json.Marshal(map[string]any{"webhook": "secret-webhook", "code": 1, "token": "secret-token", "data": inner, "price": "180.00", "id": json.Number("9007199254740993"), "usable_count": 0})
 	Response(ctx, "N1", "POST", "/stock?token=secret-query", 200, raw, time.Now(), nil)
 	log := out.String()
-	for _, secret := range []string{"test-secret-key", "test-secret-iv", "secret-token", "secret-query", inner} {
+	for _, secret := range []string{"secret-webhook", "test-secret-key", "test-secret-iv", "secret-token", "secret-query", inner} {
 		if strings.Contains(log, secret) {
 			t.Fatal("response log leaked secret")
 		}

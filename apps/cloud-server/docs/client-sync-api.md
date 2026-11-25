@@ -289,3 +289,17 @@ order 为订单列表 item 的云端记录 `id`，**不是官方订单号**。�
 ## 九、交付边界
 
 cloud-server 接口与本次 local-agent 接入均已实现。模拟订单以 `simulated:true` 上报并在管理页面标识。当前没有客户端删除云端订单 API，删除本地记录不删除云端记录。
+
+## 十、飞书通知配置下发
+
+`GET /api/agent/v1/feishu-config` 使用上述 Bearer 会话与 AES-GCM 响应信封，返回的配置只属于当前会话的代理商，不接受 `agent_id` 等账号选择参数。登录后获取，并在健康检查成功后约每 30 秒同步。
+
+解密后的成功响应：
+
+```json
+{"code":"ok","message":"","data":{"enabled":true,"webhook":"https://open.feishu.cn/open-apis/bot/v2/hook/<机器人标识>","order_created":true,"auth_expired":true,"order_blocked":true,"revision":1}}
+```
+
+未配置时 `webhook` 为空、`revision` 为 0，四个开关默认开启。客户端应保留最近有效配置以应对临时同步失败，缓存必须加密并按服务端和代理商隔离。完整 Webhook 只交给 Go 发送层；界面与日志需脱敏。
+
+通知由 local-agent 直接发送飞书，服务器不接收事件、不转发消息、不保存逐条发送结果。客户端失败后依次等待 5／15／30 秒，最多重试 3 次；订单通知等到详情齐全再发送，已知支付截止时间到期后停止；关闭或重启不恢复待发事件。完整业务规则和管理员配置接口见[工程文档的飞书章节](../../../README.md#feishu-notifications)。

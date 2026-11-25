@@ -12,6 +12,7 @@ import (
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
 	"robot/apps/local-agent/internal/business"
 	"robot/apps/local-agent/internal/cloud"
+	"robot/apps/local-agent/internal/feishunotify"
 	"robot/apps/local-agent/internal/ippool"
 	"robot/apps/local-agent/internal/store"
 	"robot/apps/local-agent/internal/tasks"
@@ -44,6 +45,8 @@ type State struct {
 	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
+	feishu            *feishunotify.Manager
+	authNotice        map[int64]authNoticeState
 	ipPool            *ippool.Manager
 	autoRefresh       AutoRefreshSettings
 	nextAutoRefresh   time.Time
@@ -273,6 +276,7 @@ func (s *Service) Login(f Form) error {
 		return err
 	}
 	s.session = &session
+	s.initFeishuLocked()
 	s.state.AuthProtocol = f.AuthProtocol
 	s.state.LoggedIn = true
 	s.state.AgentName = session.Agent.Name
@@ -284,9 +288,15 @@ func (s *Service) Login(f Form) error {
 		s.protocols.Activate(f.AuthProtocol)
 	}
 	s.log.Info("agent login succeeded")
+	go s.syncFeishu(s.ctx, s.session)
 	return nil
 }
 func (s *Service) clearSession(notice string) {
+	if s.feishu != nil {
+		s.feishu.Cancel()
+		go s.feishu.Close()
+		s.feishu = nil
+	}
 	s.maintenanceResume = map[int64]bool{}
 	s.cancelInventoryLocked()
 	s.cancelBusinessLocked()
@@ -352,6 +362,9 @@ func (s *Service) monitor() {
 			s.mu.Unlock()
 			ctx, cancel := context.WithDeadline(s.ctx, session.ExpiresAt)
 			err := client.Call(ctx, "GET", "/auth/me", session.Token, nil, nil)
+			if err == nil {
+				s.syncFeishu(ctx, session)
+			}
 			cancel()
 			s.mu.Lock()
 			if s.session == session {

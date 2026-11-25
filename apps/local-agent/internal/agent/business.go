@@ -107,6 +107,9 @@ func (s *Service) reconcileBusinessLocked() {
 	for _, t := range s.tasks.Snapshot().Tasks {
 		present[t.ID] = true
 		b, ok := bindings[t.ID]
+		if ok {
+			s.authNoticeLocked(t, b)
+		}
 		r := s.businessRuns[t.ID]
 		if r != nil && (!ok || !sameBinding(r.binding, b) || b.Paused || b.Protocol != s.state.AuthProtocol) {
 			s.stopOrderKeysLocked(r)

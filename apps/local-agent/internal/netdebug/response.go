@@ -80,7 +80,7 @@ func sanitize(v any, depth int) any {
 				}
 			}
 			switch strings.ToLower(k) {
-			case "token", "access_token", "refresh_token", "authorization", "password", "encrypt_key", "session_key", "sessionkey", "iv", "signature", "s_sign", "encrypteddata", "authcode", "login_code", "code2session", "real_card_id2", "phone2", "qrcode", "qr_code", "qrbase64", "qr_code_base64":
+			case "webhook", "token", "access_token", "refresh_token", "authorization", "password", "encrypt_key", "session_key", "sessionkey", "iv", "signature", "s_sign", "encrypteddata", "authcode", "login_code", "code2session", "real_card_id2", "phone2", "qrcode", "qr_code", "qrbase64", "qr_code_base64":
 				x[k] = "[REDACTED]"
 			default:
 				x[k] = sanitize(value, depth+1)

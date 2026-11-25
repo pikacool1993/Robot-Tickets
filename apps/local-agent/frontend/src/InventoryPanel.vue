@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { backend, type InventoryView, type InventorySettings } from './bridge'
 import TaskToast from './TaskToast.vue'
+import FeishuPanel from './FeishuPanel.vue'
 import { watch } from 'vue'
 defineProps<{ stadium?: string }>()
 const emit = defineEmits<{ update: [value: InventoryView]; notice: [value: string] }>()
@@ -208,7 +209,8 @@ onUnmounted(() => { alive = false; clearInterval(poll); clearInterval(tick); dia
             </template>
           </fieldset>
         </form>
-        <template v-else-if="modal === 'details'">
+        <FeishuPanel v-if="modal === 'settings'" />
+        <template v-if="modal === 'details'">
           <dl class="inventory-details">
             <div><dt>比赛 ID</dt><dd>{{ view?.match.id || '—' }}</dd></div><div><dt>比赛状态</dt><dd>{{ view?.match.enabled ? '已启用' : '未启用' }}</dd></div>
             <div><dt>座位目录</dt><dd>{{ stadium || '未加载' }}</dd></div><div><dt>比赛时间</dt><dd>{{ time(view?.match.match_at) }}</dd></div><div><dt>开售时间</dt><dd>{{ time(view?.match.sale_at) }}</dd></div><div><dt>时区</dt><dd>北京时间（UTC+8）</dd></div>

@@ -193,6 +193,7 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 		return true
 	}
 	cfg, session, sender := s.session.BusinessConfig, r.orderPeople.session, s.orderClient
+	notificationManager := s.feishu
 	submittedPlan := *r.plan
 	submittedPlan.Parts = append([]inventory.Allocation{}, r.plan.Parts...)
 	pending := s.orderSnapshotLocked(id, r, submittedPlan)
@@ -259,6 +260,11 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 				s.mu.Unlock()
 			}
 			s.completeSyncOrderDetail(owner, record, detail, detailErr)
+			s.mu.Lock()
+			if s.feishu == notificationManager {
+				s.orderNoticeLocked(&record, cfg)
+			}
+			s.mu.Unlock()
 		}()
 	}
 	if r.stopRequested || r.status == "stopping" {
@@ -273,6 +279,9 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 		} else if result.Code == 1 && result.OrderID == "" {
 			r.status, r.message, r.manualPaused = "order_verifying", "已停止／订单待核实：成功码缺少有效订单 ID", "uncertain"
 		} else if result.BlocksPurchase() {
+			if s.feishu == notificationManager {
+				s.blockedNoticeLocked(id, r, result.Message, pending.Viewers)
+			}
 			r.status, r.message = "order_blocked", result.Message
 			s.setManualRunLocked(id, r)
 		} else {
@@ -293,6 +302,9 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 	}
 	// Explicit purchase restrictions take precedence over code-based delays.
 	if result.BlocksPurchase() {
+		if s.feishu == notificationManager {
+			s.blockedNoticeLocked(id, r, result.Message, pending.Viewers)
+		}
 		r.status, r.message = "order_blocked", result.Message
 		r.retryAt = time.Time{}
 		s.setManualRunLocked(id, r)

@@ -36,6 +36,8 @@ async function request(path: string, method = 'GET', body?: unknown) {
   return payload?.data
 }
 export const api = {
+  agentFeishuConfig: (id: string) => request(`/agents/${id}/feishu-config`),
+  saveAgentFeishuConfig: (id: string, data: unknown) => request(`/agents/${id}/feishu-config`, 'PUT', data),
   exportClientConfig,
  currentMatch: () => request("/current-match"),
  saveCurrentMatch: (data: unknown) => request("/current-match", "PUT", data),

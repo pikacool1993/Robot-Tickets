@@ -57,6 +57,8 @@ func TestLoginRememberRestartAndExpiry(t *testing.T) {
 		case "/api/agent/v1/time":
 			data = map[string]any{"unix_ms": time.Now().UnixMilli()}
 		case "/api/agent/v1/auth/logout":
+		case "/api/agent/v1/feishu-config":
+			data = map[string]any{"enabled": true, "order_created": true, "auth_expired": true, "order_blocked": true, "webhook": ""}
 		default:
 			t.Error("unexpected endpoint")
 		}
