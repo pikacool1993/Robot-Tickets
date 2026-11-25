@@ -12,6 +12,7 @@ import (
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
 	"robot/apps/local-agent/internal/business"
 	"robot/apps/local-agent/internal/cloud"
+	"robot/apps/local-agent/internal/ippool"
 	"robot/apps/local-agent/internal/store"
 	"robot/apps/local-agent/internal/tasks"
 	"robot/apps/local-agent/internal/userkey"
@@ -43,6 +44,7 @@ type State struct {
 	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
+	ipPool            *ippool.Manager
 	autoRefresh       AutoRefreshSettings
 	nextAutoRefresh   time.Time
 	refreshNow        func() time.Time
@@ -95,7 +97,15 @@ func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed
 		cancel()
 		return nil, err
 	}
-	s.businessClient = business.NewClient()
+	pool, poolErr := ippool.New(db)
+	if poolErr != nil {
+		cancel()
+		return nil, poolErr
+	}
+	s.ipPool = pool
+	client := business.NewClient()
+	client.UseIPPool(pool)
+	s.businessClient = client
 	s.orderClient = s.businessClient
 	s.businessRuns = map[int64]*businessRun{}
 	s.businessDone = make(chan struct{})
@@ -388,6 +398,9 @@ func (s *Service) Close() {
 	}
 	if s.businessClient != nil {
 		s.businessClient.Close()
+	}
+	if s.ipPool != nil {
+		s.ipPool.Close()
 	}
 	s.executionLogs.wg.Wait()
 }

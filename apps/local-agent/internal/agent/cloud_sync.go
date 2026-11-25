@@ -409,7 +409,7 @@ func syncOrderPayload(record OrderRecord, detail business.OrderDetail, detailErr
 			viewers = append(viewers, viewer{person.Name, person.Phone})
 		}
 	}
-	raw, _ := json.Marshal(map[string]any{"order_id": record.ID, "task_id": record.TaskID, "match_id": record.Match.ID, "match_name": record.Match.Name, "ticket_count": len(record.Viewers), "tiers": tiers, "seats": seats, "created_at": record.CreatedAt, "payment_deadline": deadline, "detail_status": status, "viewers": viewers, "simulated": record.Simulated})
+	raw, _ := json.Marshal(map[string]any{"order_ip": record.OrderIP, "order_id": record.ID, "task_id": record.TaskID, "match_id": record.Match.ID, "match_name": record.Match.Name, "ticket_count": len(record.Viewers), "tiers": tiers, "seats": seats, "created_at": record.CreatedAt, "payment_deadline": deadline, "detail_status": status, "viewers": viewers, "simulated": record.Simulated})
 	return raw
 }
 

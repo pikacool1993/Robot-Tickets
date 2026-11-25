@@ -5,8 +5,8 @@ const props = defineProps<{ state: State; busy?: boolean }>()
 const connectionLabel = computed(() => props.state.connection === '已连接' ? '云端已连接' : props.state.connection === '连接中断' ? '云端连接中断' : props.state.connection)
 defineEmits<{ logout: [] }>()
 // Register new client features here as their pages become available.
-const navigation = [{ id: 'tasks', label: '任务' }, { id: 'orders', label: '订单' }] as const
-const activePage = ref<'tasks' | 'orders'>('tasks')
+const navigation = [{ id: 'tasks', label: '任务' }, { id: 'orders', label: '订单' }, { id: 'ips', label: 'IP 池' }] as const
+const activePage = ref<'tasks' | 'orders' | 'ips'>('tasks')
 const collapsed = ref(false)
 </script>
 

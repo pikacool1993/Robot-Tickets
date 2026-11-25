@@ -144,6 +144,9 @@ func (s *Service) DeleteTask(id int64) error {
 	}
 	delete(s.inventory.manual, id)
 	delete(s.inventory.runs, id)
+	if s.ipPool != nil {
+		s.ipPool.Release(id)
+	}
 	delete(s.maintenanceResume, id)
 	return nil
 }

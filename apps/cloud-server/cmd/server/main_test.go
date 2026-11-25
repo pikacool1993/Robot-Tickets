@@ -84,3 +84,23 @@ func TestAdminWebHandlerServesAssetsAndSPA(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureOrderIPColumn(t *testing.T) {
+	for _, count := range []int{0, 1} {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(count))
+		if count == 0 {
+			mock.ExpectExec("ALTER TABLE agent_orders ADD COLUMN order_ip").WillReturnResult(sqlmock.NewResult(0, 0))
+		}
+		if err := ensureOrderIPColumn(t.Context(), db); err != nil {
+			t.Fatal(err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+	}
+}

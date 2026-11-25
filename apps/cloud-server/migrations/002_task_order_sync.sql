@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS agent_orders (
     payment_deadline DATETIME(6) NULL,
     detail_status VARCHAR(16) NOT NULL,
     simulated BOOLEAN NOT NULL DEFAULT FALSE,
+    order_ip VARCHAR(45) NOT NULL DEFAULT '',
     viewer_ciphertext MEDIUMBLOB NOT NULL,
     viewer_nonce BINARY(12) NOT NULL,
     viewer_key_version VARCHAR(32) NOT NULL,

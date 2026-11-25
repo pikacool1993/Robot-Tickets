@@ -67,6 +67,9 @@ func main() {
 	if err = ensureSimulatedOrderColumn(ctx, db); err != nil {
 		log.Fatal(err)
 	}
+	if err = ensureOrderIPColumn(ctx, db); err != nil {
+		log.Fatal(err)
+	}
 	if err = seedBusinessTemplates(ctx, db); err != nil {
 		log.Fatal(err)
 	}

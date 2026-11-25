@@ -141,7 +141,7 @@ func (s *Service) InventoryView() (InventoryView, error) {
 		v := ExecutionView{Status: r.status, Message: r.message, Target: r.target}
 		v.RetryAt = r.retryAt
 		if r.order != nil {
-			copy := OrderDisplay{ID: r.order.ID, TaskID: r.order.TaskID, Match: r.order.Match, ViewerIDs: append([]string{}, r.order.ViewerIDs...), Viewers: append([]OrderViewer{}, r.order.Viewers...), Plan: r.order.Plan, CreatedAt: r.order.CreatedAt}
+			copy := OrderDisplay{OrderIP: r.order.OrderIP, ID: r.order.ID, TaskID: r.order.TaskID, Match: r.order.Match, ViewerIDs: append([]string{}, r.order.ViewerIDs...), Viewers: append([]OrderViewer{}, r.order.Viewers...), Plan: r.order.Plan, CreatedAt: r.order.CreatedAt}
 			copy.Plan.Parts = append([]inventory.Allocation{}, r.order.Plan.Parts...)
 			for i := range copy.Viewers {
 				copy.Viewers[i].Phone = ""
@@ -238,6 +238,13 @@ func (s *Service) validInventoryLocked(id int64, r *inventoryRun) bool {
 	return s.inventory.runs[id] == r && r.ctx.Err() == nil && r.business != nil && s.currentBusinessLocked(id, r.business) && !r.business.busy && !r.business.refresh.invalid
 }
 func (s *Service) stopInventoryLocked(id int64, status, message string) {
+	if s.ipPool != nil {
+		defer func() {
+			if r := s.inventory.runs[id]; r == nil || !r.orderInFlight {
+				s.ipPool.Release(id)
+			}
+		}()
+	}
 	if r := s.inventory.runs[id]; r != nil {
 		if r.status == "order_created" || r.status == "order_verifying" || r.status == "order_blocked" {
 			return

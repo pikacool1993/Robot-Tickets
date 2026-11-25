@@ -16,11 +16,14 @@ import (
 func TestSyncOrderPayloadUsesActualOrderDetail(t *testing.T) {
 	created := time.Date(2026, 11, 21, 14, 0, 0, 0, time.FixedZone("CST", 8*3600))
 	viewer := OrderViewer{Name: "购票人", Phone: "13800000000"}
-	record := OrderRecord{ID: "9001", TaskID: 7, Match: clientprotocol.MatchConfig{ID: "42", Name: "主队 VS 客队"}, Plan: inventory.Plan{Parts: []inventory.Allocation{{Region: inventory.Region{Name: "VIP"}, Quantity: 1}}}, Viewers: []OrderViewer{viewer}, CreatedAt: created}
+	record := OrderRecord{OrderIP: "192.0.2.10", ID: "9001", TaskID: 7, Match: clientprotocol.MatchConfig{ID: "42", Name: "主队 VS 客队"}, Plan: inventory.Plan{Parts: []inventory.Allocation{{Region: inventory.Region{Name: "VIP"}, Quantity: 1}}}, Viewers: []OrderViewer{viewer}, CreatedAt: created}
 	detail := business.OrderDetail{OrderEndTime: "2026-11-21 14:15:00", Bill: []business.OrderTicket{{EstateName: "VIP", Row: 8, Seat: 12, RealName: viewer.Name, Phone: viewer.Phone}}}
 	var payload map[string]any
 	if err := json.Unmarshal(syncOrderPayload(record, detail, nil), &payload); err != nil {
 		t.Fatal(err)
+	}
+	if payload["order_ip"] != "192.0.2.10" {
+		t.Fatal("order IP missing from upload", payload)
 	}
 	if payload["detail_status"] != "complete" || payload["payment_deadline"] == nil || payload["simulated"] != false {
 		t.Fatalf("complete official detail not included: %#v", payload)

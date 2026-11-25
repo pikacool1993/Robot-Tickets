@@ -107,7 +107,7 @@ func TestAdminOrdersMatchIDAndPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows := sqlmock.NewRows([]string{"id", "agent_name", "client_number", "client_instance_id", "task_id", "order_id", "match_id", "match_name", "ticket_count", "tiers", "seats", "created_at", "payment_deadline", "detail_status", "simulated", "viewer_ciphertext", "viewer_nonce", "viewer_key_version", "received_at"}).AddRow(8, "owner", "A01", "instance", 1, "SIM-123", "match", "example", 1, []byte(`["A区"]`), []byte(`[]`), created, nil, "complete", true, ciphertext, nonce, "v1", created)
+	rows := sqlmock.NewRows([]string{"id", "agent_name", "client_number", "client_instance_id", "task_id", "order_id", "match_id", "match_name", "ticket_count", "tiers", "seats", "created_at", "payment_deadline", "detail_status", "simulated", "order_ip", "viewer_ciphertext", "viewer_nonce", "viewer_key_version", "received_at"}).AddRow(8, "owner", "A01", "instance", 1, "SIM-123", "match", "example", 1, []byte(`["A区"]`), []byte(`[]`), created, nil, "complete", true, "192.0.2.10", ciphertext, nonce, "v1", created)
 	mock.ExpectQuery("SELECT id,agent_name,client_number.*WHERE agent_id=\\? AND client_number=\\? AND match_id=\\?.*LIMIT \\? OFFSET \\?").WithArgs("agent", "A01", "match", 200, 200).WillReturnRows(rows)
 	w := httptest.NewRecorder()
 	s.listAllAdminOrders(w, httptest.NewRequest("GET", "/api/admin/v1/orders?agent_id=agent&client_number=A01&match_id=match&page=2&limit=200", nil))

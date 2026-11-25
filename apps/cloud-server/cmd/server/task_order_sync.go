@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -173,6 +174,7 @@ func (s *Server) getTerminalTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 type orderSyncInput struct {
+	OrderIP         string        `json:"order_ip"`
 	OrderID         string        `json:"order_id"`
 	TaskID          int64         `json:"task_id"`
 	MatchID         string        `json:"match_id"`
@@ -197,6 +199,10 @@ type orderViewer struct {
 }
 
 func (in *orderSyncInput) validate() error {
+	in.OrderIP = strings.TrimSpace(in.OrderIP)
+	if in.OrderIP != "" && in.OrderIP != "direct" && net.ParseIP(in.OrderIP) == nil {
+		return errors.New("invalid order IP")
+	}
 	in.OrderID = strings.TrimSpace(in.OrderID)
 	in.MatchID = strings.TrimSpace(in.MatchID)
 	in.MatchName = strings.TrimSpace(in.MatchName)
@@ -265,7 +271,7 @@ func (s *Server) syncOrder(w http.ResponseWriter, r *http.Request) {
 	if in.PaymentDeadline != nil {
 		deadline = in.PaymentDeadline.UTC()
 	}
-	_, err = s.db.ExecContext(r.Context(), "INSERT INTO agent_orders(agent_id,agent_name,client_number,client_instance_id,task_id,order_id,match_id,match_name,ticket_count,tiers,seats,created_at,payment_deadline,detail_status,simulated,viewer_ciphertext,viewer_nonce,viewer_key_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id", agent, agentName, clientNumber, instance, in.TaskID, in.OrderID, in.MatchID, in.MatchName, in.TicketCount, string(mustJSON(in.Tiers)), string(mustJSON(in.Seats)), in.CreatedAt.UTC(), deadline, in.DetailStatus, in.Simulated, viewerCiphertext, viewerNonce, s.credentialKeyVersion)
+	_, err = s.db.ExecContext(r.Context(), "INSERT INTO agent_orders(agent_id,agent_name,client_number,client_instance_id,task_id,order_id,match_id,match_name,ticket_count,tiers,seats,created_at,payment_deadline,detail_status,simulated,order_ip,viewer_ciphertext,viewer_nonce,viewer_key_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id", agent, agentName, clientNumber, instance, in.TaskID, in.OrderID, in.MatchID, in.MatchName, in.TicketCount, string(mustJSON(in.Tiers)), string(mustJSON(in.Seats)), in.CreatedAt.UTC(), deadline, in.DetailStatus, in.Simulated, in.OrderIP, viewerCiphertext, viewerNonce, s.credentialKeyVersion)
 	if err != nil {
 		s.failure(w, 500, agentKeyID(), "internal_error", "Unable to save order")
 		return
@@ -364,7 +370,7 @@ func (s *Server) listAllAdminOrders(w http.ResponseWriter, r *http.Request) {
 		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to count orders")
 		return
 	}
-	querySQL := "SELECT id,agent_name,client_number,client_instance_id,task_id,order_id,match_id,match_name,ticket_count,tiers,seats,created_at,payment_deadline,detail_status,simulated,viewer_ciphertext,viewer_nonce,viewer_key_version,received_at FROM agent_orders" + whereSQL + " ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?"
+	querySQL := "SELECT id,agent_name,client_number,client_instance_id,task_id,order_id,match_id,match_name,ticket_count,tiers,seats,created_at,payment_deadline,detail_status,simulated,order_ip,viewer_ciphertext,viewer_nonce,viewer_key_version,received_at FROM agent_orders" + whereSQL + " ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?"
 	pageArgs := append(append([]any{}, args...), limit, (page-1)*limit)
 	rows, err := s.db.QueryContext(r.Context(), querySQL, pageArgs...)
 	if err != nil {
@@ -375,13 +381,13 @@ func (s *Server) listAllAdminOrders(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0)
 	for rows.Next() {
 		var id, taskID int64
-		var agentName, client, instance, orderID, matchID, matchName, detailStatus, version string
+		var agentName, client, instance, orderID, matchID, matchName, detailStatus, version, orderIP string
 		var ticketCount int
 		var simulated bool
 		var tiers, seats, cipherText, nonce []byte
 		var created, received time.Time
 		var deadline sql.NullTime
-		if err := rows.Scan(&id, &agentName, &client, &instance, &taskID, &orderID, &matchID, &matchName, &ticketCount, &tiers, &seats, &created, &deadline, &detailStatus, &simulated, &cipherText, &nonce, &version, &received); err != nil || version != s.credentialKeyVersion {
+		if err := rows.Scan(&id, &agentName, &client, &instance, &taskID, &orderID, &matchID, &matchName, &ticketCount, &tiers, &seats, &created, &deadline, &detailStatus, &simulated, &orderIP, &cipherText, &nonce, &version, &received); err != nil || version != s.credentialKeyVersion {
 			s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read orders")
 			return
 		}
@@ -394,7 +400,7 @@ func (s *Server) listAllAdminOrders(w http.ResponseWriter, r *http.Request) {
 		for i := range viewers {
 			viewers[i].Phone = maskPhone(viewers[i].Phone)
 		}
-		items = append(items, map[string]any{"id": id, "agent_name": agentName, "client_number": client, "client_instance_id": instance, "task_id": taskID, "order_id": orderID, "match_id": matchID, "match_name": matchName, "ticket_count": ticketCount, "tiers": json.RawMessage(tiers), "seats": json.RawMessage(seats), "created_at": created, "payment_deadline": nullableTime(deadline), "detail_status": detailStatus, "simulated": simulated, "viewers": viewers, "received_at": received})
+		items = append(items, map[string]any{"id": id, "agent_name": agentName, "client_number": client, "client_instance_id": instance, "task_id": taskID, "order_id": orderID, "match_id": matchID, "match_name": matchName, "ticket_count": ticketCount, "tiers": json.RawMessage(tiers), "seats": json.RawMessage(seats), "created_at": created, "payment_deadline": nullableTime(deadline), "detail_status": detailStatus, "simulated": simulated, "order_ip": orderIP, "viewers": viewers, "received_at": received})
 	}
 	if err := rows.Err(); err != nil {
 		s.adminFailure(w, 500, s.adminKeyID, "internal_error", "Unable to read orders")
@@ -447,7 +453,7 @@ func (s *Server) readOrders(w http.ResponseWriter, r *http.Request, agent string
 			s.failure(w, 500, agentKeyID(), "internal_error", "Unable to read orders")
 		}
 	}
-	rows, err := s.db.QueryContext(r.Context(), "SELECT id,agent_name,client_number,client_instance_id,task_id,order_id,match_id,match_name,ticket_count,tiers,seats,created_at,payment_deadline,detail_status,simulated,viewer_ciphertext,viewer_nonce,viewer_key_version,received_at FROM agent_orders WHERE agent_id=? ORDER BY created_at DESC,id DESC LIMIT 500", agent)
+	rows, err := s.db.QueryContext(r.Context(), "SELECT id,agent_name,client_number,client_instance_id,task_id,order_id,match_id,match_name,ticket_count,tiers,seats,created_at,payment_deadline,detail_status,simulated,order_ip,viewer_ciphertext,viewer_nonce,viewer_key_version,received_at FROM agent_orders WHERE agent_id=? ORDER BY created_at DESC,id DESC LIMIT 500", agent)
 	if err != nil {
 		fail()
 		return
@@ -456,13 +462,13 @@ func (s *Server) readOrders(w http.ResponseWriter, r *http.Request, agent string
 	orders := []map[string]any{}
 	for rows.Next() {
 		var id, taskID int64
-		var agentName, client, instance, orderID, matchID, matchName, detailStatus, version string
+		var agentName, client, instance, orderID, matchID, matchName, detailStatus, version, orderIP string
 		var ticketCount int
 		var simulated bool
 		var tiers, seats, ciphertext, nonce []byte
 		var created, received time.Time
 		var deadline sql.NullTime
-		err := rows.Scan(&id, &agentName, &client, &instance, &taskID, &orderID, &matchID, &matchName, &ticketCount, &tiers, &seats, &created, &deadline, &detailStatus, &simulated, &ciphertext, &nonce, &version, &received)
+		err := rows.Scan(&id, &agentName, &client, &instance, &taskID, &orderID, &matchID, &matchName, &ticketCount, &tiers, &seats, &created, &deadline, &detailStatus, &simulated, &orderIP, &ciphertext, &nonce, &version, &received)
 		if err != nil || version != s.credentialKeyVersion {
 			fail()
 			return
@@ -479,7 +485,7 @@ func (s *Server) readOrders(w http.ResponseWriter, r *http.Request, agent string
 				viewers[i].Phone = maskPhone(viewers[i].Phone)
 			}
 		}
-		orders = append(orders, map[string]any{"id": id, "agent_name": agentName, "client_number": client, "client_instance_id": instance, "task_id": taskID, "order_id": orderID, "match_id": matchID, "match_name": matchName, "ticket_count": ticketCount, "tiers": json.RawMessage(tiers), "seats": json.RawMessage(seats), "created_at": created, "payment_deadline": nullableTime(deadline), "detail_status": detailStatus, "simulated": simulated, "viewers": viewers, "received_at": received})
+		orders = append(orders, map[string]any{"id": id, "agent_name": agentName, "client_number": client, "client_instance_id": instance, "task_id": taskID, "order_id": orderID, "match_id": matchID, "match_name": matchName, "ticket_count": ticketCount, "tiers": json.RawMessage(tiers), "seats": json.RawMessage(seats), "created_at": created, "payment_deadline": nullableTime(deadline), "detail_status": detailStatus, "simulated": simulated, "order_ip": orderIP, "viewers": viewers, "received_at": received})
 	}
 	if rows.Err() != nil {
 		fail()

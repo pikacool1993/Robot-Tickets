@@ -58,9 +58,9 @@ func TestOrderRetryPreservesRecordAndUsesSessionOwner(t *testing.T) {
 	mock.ExpectQuery("SELECT x.client_number,x.client_instance_id,a.name FROM agent_sessions").WithArgs(hashToken("token"), "agent").WillReturnRows(sqlmock.NewRows([]string{"number", "instance", "name"}).AddRow("A01", "instance", "owner"))
 	at := time.Date(2026, 11, 21, 6, 0, 0, 0, time.UTC)
 	mock.ExpectExec("INSERT INTO agent_orders.*ON DUPLICATE KEY UPDATE id=id").
-		WithArgs("agent", "owner", "A01", "instance", int64(1), "123", "match", "example", 1, "[]", "[]", at, nil, "unavailable", true, sqlmock.AnyArg(), sqlmock.AnyArg(), "v1").
+		WithArgs("agent", "owner", "A01", "instance", int64(1), "123", "match", "example", 1, "[]", "[]", at, nil, "unavailable", true, "192.0.2.10", sqlmock.AnyArg(), sqlmock.AnyArg(), "v1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	env, err := s.keys.Seal("client-v1", []byte(`{"order_id":"123","task_id":1,"match_id":"match","match_name":"example","ticket_count":1,"created_at":"2026-11-21T14:00:00+08:00","detail_status":"unavailable","simulated":true,"agent_id":"other","client_number":"A99"}`))
+	env, err := s.keys.Seal("client-v1", []byte(`{"order_ip":"192.0.2.10","order_id":"123","task_id":1,"match_id":"match","match_name":"example","ticket_count":1,"created_at":"2026-11-21T14:00:00+08:00","detail_status":"unavailable","simulated":true,"agent_id":"other","client_number":"A99"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,5 +70,20 @@ func TestOrderRetryPreservesRecordAndUsesSessionOwner(t *testing.T) {
 	s.syncOrder(w, r)
 	if w.Code != 200 {
 		t.Fatalf("unexpected response: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestOrderIPValidation(t *testing.T) {
+	for _, ip := range []string{"", "direct", "192.0.2.10", "2001:db8::1"} {
+		in := orderSyncInput{OrderIP: ip, OrderID: "1", TaskID: 1, MatchID: "1", MatchName: "test", TicketCount: 1, CreatedAt: time.Now(), DetailStatus: "unavailable"}
+		if err := in.validate(); err != nil {
+			t.Fatalf("valid IP %q: %v", ip, err)
+		}
+	}
+	for _, ip := range []string{"http://user:password@192.0.2.10:80", "192.0.2.10:80", "invalid"} {
+		in := orderSyncInput{OrderIP: ip}
+		if err := in.validate(); err == nil {
+			t.Fatalf("invalid IP accepted %q", ip)
+		}
 	}
 }

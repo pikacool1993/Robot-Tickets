@@ -114,6 +114,7 @@ Content-Type: application/json
 | detail_status | string | 是 | complete 或 unavailable |
 | viewers | object[] | 条件 | 观演人，最多 100 项；complete 时项数须等于票数 |
 | simulated | boolean | 否 | 是否为客户端模拟验收订单；省略时按 false 处理 |
+| order_ip | string | 否 | N5 请求发送时选中的代理 IP（IPv4/IPv6），本机直连为 `direct`，历史未知或模拟订单为空；不含端口或认证信息 |
 
 | 子字段 | 类型 | 校验规则 |
 | --- | --- | --- |
@@ -159,7 +160,7 @@ Content-Type: application/json
 }
 ```
 
-未取得字段留空，不能以计划座位要求代替实际座位。接口不接收票务 token、code 或证件号。模拟验收订单会通过同一接口上报，必须携带 `simulated:true`；客户端模拟流程使用本地生成的详情，不请求真实订单详情接口。
+未取得字段留空，不能以计划座位要求代替实际座位。接口不接收票务 token、code 或证件号。`order_ip` 取自本次下单请求实际选中的出口快照，后续代理切换不改写；代理 IP 表示录入的代理入口地址，不保证等同代理商最终公网出口，`direct` 也不代表已探测到本机公网 IP。模拟验收订单会通过同一接口上报，必须携带 `simulated:true`；客户端模拟流程使用本地生成的详情，不请求真实订单详情接口。
 
 ### 成功响应：HTTP 200
 
@@ -185,7 +186,7 @@ Content-Type: application/json
     "match_id":"match-42","match_name":"主队 VS 客队",
     "ticket_count":1,"tiers":["VIP"],"seats":[{"tier":"VIP","row":3,"seat":11}],
     "created_at":"2026-11-21T05:00:00Z","payment_deadline":"2026-11-21T05:15:00Z",
-    "detail_status":"complete","simulated":false,"viewers":[{"name":"示例甲","phone":"13800000000"}],
+    "detail_status":"complete","simulated":false,"order_ip":"192.0.2.10","viewers":[{"name":"示例甲","phone":"13800000000"}],
     "received_at":"2026-11-21T05:00:02Z"
   }]
 }
@@ -245,7 +246,7 @@ Content-Type: application/json
 | created_from / created_to | 出票日期范围，格式 `YYYY-MM-DD`，结束日期包含当天 |
 | page / limit | 页码和每页数量；默认 1 / 50，limit 最大 200 |
 
-成功响应：`data` 包含 `items`、`page`、`limit`、`total`；每个 item 结构与第五节订单记录一致，并包含 `simulated` 布尔字段。管理页面对模拟订单显示“模拟订单”标识。无记录时 `items:[]`。
+成功响应：`data` 包含 `items`、`page`、`limit`、`total`；每个 item 结构与第五节订单记录一致，并包含 `simulated` 布尔字段及 `order_ip` 字符串字段。管理页面对模拟订单显示“模拟订单”标识。无记录时 `items:[]`。
 
 ### 7.2 查看完整观演人信息
 

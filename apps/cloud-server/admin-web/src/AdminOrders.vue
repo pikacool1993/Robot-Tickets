@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from './api.ts'
 
 interface OrderViewer { name: string; phone: string }
-interface CloudOrder { id: number; agent_name: string; client_number: string; task_id: number; order_id: string; match_id: string; match_name: string; seats: { tier: string; row: number; seat: number }[]; created_at: string; payment_deadline: string | null; simulated: boolean; viewers: OrderViewer[] }
+interface CloudOrder { order_ip?: string; id: number; agent_name: string; client_number: string; task_id: number; order_id: string; match_id: string; match_name: string; seats: { tier: string; row: number; seat: number }[]; created_at: string; payment_deadline: string | null; simulated: boolean; viewers: OrderViewer[] }
 const route = useRoute(), router = useRouter()
 const queryString = (key: string) => typeof route.query[key] === 'string' ? route.query[key] as string : ''
 const initialFilters = () => ({ agent_id: queryString('agent_id'), client_number: queryString('client_number'), match_id: queryString('match_id') })
@@ -81,7 +81,7 @@ onMounted(() => {
     <div v-if="loading && !orders.length" class="empty">正在查询订单…</div><div v-else-if="!orders.length" class="empty">没有符合条件的订单</div>
     <div v-else class="order-table-wrap" :aria-busy="loading"><table class="orders-table"><thead><tr><th>订单信息</th><th>代理商 / 终端</th><th>场次</th><th>票务信息</th><th>观演人</th><th>联系方式</th><th>出票时间</th><th>支付截止时间</th></tr></thead><tbody>
       <tr v-for="order in orders" :key="order.id">
-        <td data-label="订单信息"><strong class="order-number">{{ order.order_id }}</strong><span v-if="order.simulated" class="simulation-badge">模拟订单</span><small>任务 #{{ order.task_id }}</small></td>
+        <td data-label="订单信息"><strong class="order-number">{{ order.order_id }}</strong><span v-if="order.simulated" class="simulation-badge">模拟订单</span><small>任务 #{{ order.task_id }}</small><small>下单 IP：{{ order.order_ip === 'direct' ? '本机直连' : order.order_ip || '未知' }}</small></td>
         <td data-label="代理商 / 终端"><strong>{{ order.agent_name }}</strong><small>{{ order.client_number }}</small></td>
         <td data-label="场次"><strong class="match-name" :title="order.match_name">{{ order.match_name }}</strong><small>ID：{{ order.match_id }}</small></td>
         <td data-label="票务信息">

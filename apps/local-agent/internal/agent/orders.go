@@ -9,6 +9,7 @@ import (
 	protocol "robot/apps/cloud-server/pkg/clientprotocol"
 	"robot/apps/local-agent/internal/business"
 	"robot/apps/local-agent/internal/inventory"
+	"robot/apps/local-agent/internal/ippool"
 	"robot/apps/local-agent/internal/orders"
 	"robot/apps/local-agent/internal/userkey"
 	"sort"
@@ -27,6 +28,7 @@ type OrderViewer struct {
 	Phone string `json:"phone"`
 }
 type OrderRecord struct {
+	OrderIP     string               `json:"orderIP,omitempty"`
 	Simulated   bool                 `json:"simulated,omitempty"`
 	Account     string               `json:"account"`
 	UserID      string               `json:"userId"`
@@ -42,6 +44,7 @@ type OrderRecord struct {
 	DetailError string               `json:"detailError,omitempty"`
 }
 type OrderDisplay struct {
+	OrderIP     string               `json:"orderIP,omitempty"`
 	Simulated   bool                 `json:"simulated,omitempty"`
 	ID          string               `json:"id"`
 	TaskID      int64                `json:"taskId"`
@@ -219,10 +222,11 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 	callCtx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 	var result business.OrderResult
 	var sendErr error
+	orderIP := ""
 	if r.simulated {
 		result, sendErr = s.simulationOrder(callCtx, id)
 	} else {
-		result, sendErr = sender.CreateOrder(s.taskNetworkContext(callCtx, id), cfg, session, path, request)
+		result, sendErr = sender.CreateOrder(ippool.WithExit(s.taskNetworkContext(callCtx, id), func(ip string) { orderIP = ip }), cfg, session, path, request)
 	}
 	cancel()
 	s.mu.Lock()
@@ -238,7 +242,7 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 	created := sendErr == nil && result.Code == 1 && result.OrderID != ""
 	if created {
 		s.clearSubmissionLocked(id)
-		s.saveCreatedOrderLocked(id, r, submittedPlan, result.OrderID, session.Token, pending.Viewers)
+		s.saveCreatedOrderLocked(id, r, submittedPlan, result.OrderID, session.Token, pending.Viewers, orderIP)
 		record := *r.order
 		owner := s.syncOwnerLocked()
 		s.seedSyncOrderLocked(owner, &record, cfg)
@@ -258,6 +262,9 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 		}()
 	}
 	if r.stopRequested || r.status == "stopping" {
+		if s.ipPool != nil {
+			s.ipPool.Release(id)
+		}
 		r.orderInFlight, r.orderPrepared = false, false
 		if created {
 			r.status, r.message = "order_created", "已停止／创建成功待支付，订单号："+result.OrderID
@@ -299,6 +306,12 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 		return true
 	}
 	if sendErr != nil {
+		var timeout interface{ Timeout() bool }
+		if errors.As(sendErr, &timeout) && timeout.Timeout() {
+			s.clearSubmissionLocked(id)
+			s.orderCooldownReasonLocked(id, r, time.Second, "下单超时")
+			return true
+		}
 		s.orderCooldownReasonLocked(id, r, time.Second, "下单结果不明")
 		return true
 	}
@@ -327,9 +340,13 @@ func (s *Service) submitInventoryOrder(ctx context.Context, id int64, r *invento
 	return true
 }
 
-func (s *Service) saveCreatedOrderLocked(id int64, r *inventoryRun, p inventory.Plan, orderID, token string, viewers []OrderViewer) {
+func (s *Service) saveCreatedOrderLocked(id int64, r *inventoryRun, p inventory.Plan, orderID, token string, viewers []OrderViewer, orderIPs ...string) {
 	p.Parts = append([]inventory.Allocation{}, p.Parts...)
-	record := &OrderRecord{Account: r.business.binding.Protocol + ":" + r.business.binding.Account.Ref, UserID: r.business.session.UserID, ID: orderID, TaskID: id, Match: r.match, ViewerIDs: append([]string{}, r.task.PeopleSelected...), Viewers: append([]OrderViewer{}, viewers...), Plan: p, CreatedAt: s.calibratedNowLocked(), Token: token}
+	orderIP := ""
+	if len(orderIPs) > 0 {
+		orderIP = orderIPs[0]
+	}
+	record := &OrderRecord{OrderIP: orderIP, Account: r.business.binding.Protocol + ":" + r.business.binding.Account.Ref, UserID: r.business.session.UserID, ID: orderID, TaskID: id, Match: r.match, ViewerIDs: append([]string{}, r.task.PeopleSelected...), Viewers: append([]OrderViewer{}, viewers...), Plan: p, CreatedAt: s.calibratedNowLocked(), Token: token}
 	if r.simulated {
 		record.Simulated, record.Account, record.Token = true, "simulation", "LOCAL-SIMULATION"
 		record.Details = simulatedOrderDetail(orderID, viewers, p, time.Now())
@@ -372,7 +389,7 @@ func (s *Service) GetOrderHistory() ([]OrderDisplay, error) {
 	}
 	items := make([]OrderDisplay, 0, len(s.inventory.orders))
 	for _, record := range s.inventory.orders {
-		copy := OrderDisplay{ID: record.ID, TaskID: record.TaskID, Match: record.Match, Plan: record.Plan, CreatedAt: record.CreatedAt, Details: record.Details, DetailError: record.DetailError, Simulated: record.Simulated}
+		copy := OrderDisplay{OrderIP: record.OrderIP, ID: record.ID, TaskID: record.TaskID, Match: record.Match, Plan: record.Plan, CreatedAt: record.CreatedAt, Details: record.Details, DetailError: record.DetailError, Simulated: record.Simulated}
 		copy.ViewerIDs = append([]string{}, record.ViewerIDs...)
 		copy.Viewers = append([]OrderViewer{}, record.Viewers...)
 		for i := range copy.Viewers {
@@ -428,7 +445,7 @@ func (s *Service) refreshOrderDetail(cfg business.Config, record *OrderRecord) e
 	if s.businessClient == nil {
 		return errors.New("订单服务不可用")
 	}
-	detail, err := s.businessClient.MatchOrderInfo(s.ctx, cfg, business.Session{Token: record.Token, UserID: record.UserID}, record.ID)
+	detail, err := s.businessClient.MatchOrderInfo(s.taskNetworkContext(s.ctx, record.TaskID), cfg, business.Session{Token: record.Token, UserID: record.UserID}, record.ID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, key := s.findOrderLocked(record.TaskID, record.ID)
@@ -546,9 +563,9 @@ func (s *Service) OrderAfterSale(taskID int64, id, action string) error {
 	snap := copy
 	var err error
 	if action == "cancel" {
-		err = s.businessClient.CancelMatchOrder(s.ctx, cfg, business.Session{Token: snap.Token, UserID: snap.UserID}, detail.ID)
+		err = s.businessClient.CancelMatchOrder(s.taskNetworkContext(s.ctx, taskID), cfg, business.Session{Token: snap.Token, UserID: snap.UserID}, detail.ID)
 	} else {
-		err = s.businessClient.RefundMatchOrder(s.ctx, cfg, business.Session{Token: snap.Token, UserID: snap.UserID}, detail.ID)
+		err = s.businessClient.RefundMatchOrder(s.taskNetworkContext(s.ctx, taskID), cfg, business.Session{Token: snap.Token, UserID: snap.UserID}, detail.ID)
 	}
 	if err != nil {
 		_ = s.refreshOrderDetail(cfg, &snap)

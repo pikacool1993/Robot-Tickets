@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import InventoryPanel from './InventoryPanel.vue'
 import TaskToast from './TaskToast.vue'
+import IPPoolPanel from './IPPoolPanel.vue'
 import type { InventoryView, OrderDisplay } from './bridge'
 import ScanAuthorization from './ScanAuthorization.vue'
 import { confirmDialog } from './dialogKeyboard'
@@ -145,7 +146,10 @@ async function setSeatRelaxation(task: Task, enabled: boolean, afterSec = Number
  catch (e) { if (alive) relaxError.value = failure(e) }
  finally { relaxSaving.value = false; if (alive) await pollProtocol() }
 }
-const props = defineProps<{ state: State; page: 'tasks' | 'orders' }>()
+const ipBusy=ref(false), ipBindings=ref<Record<number,Record<string,{exit:string;failures:number}>>>({})
+function ipLabel(id:number){const b=ipBindings.value[id];return b?`N1：${b.N1?.exit||'未分配'} · N5：${b.N5?.exit||'未分配'}`:'N1：未分配 · N5：未分配'}
+async function randomizeIP(id:number){if(ipBusy.value)return;ipBusy.value=true;try{inventoryNotice.value=await backend().RandomizeTaskIP(id);ipBindings.value=(await backend().GetIPPools()).bindings}catch(e){error.value=failure(e)}finally{ipBusy.value=false}}
+const props = defineProps<{ state: State; page: 'tasks' | 'orders' | 'ips' }>()
 watch(() => props.page, page => { if (page === 'orders') { orderSearch.value=''; void showOrders() } })
 
 const view = ref<TaskView>({ catalog: { stadium: '', tiers: [] }, configError: '', tasks: [] })
@@ -167,6 +171,7 @@ async function pollProtocol() {
   try {
     const status = await backend().GetProtocolStatus()
     const data = await backend().GetTasks()
+    ipBindings.value=(await backend().GetIPPools()).bindings
     if (alive) { protocol.value = status; updateView(data) }
     if (modal.value === 'auth' && activeID.value !== null) {
       const generation = authGeneration
@@ -282,6 +287,45 @@ const copyNotice = ref(''), copying = ref(false)
 const logList = ref<HTMLElement | null>(null)
 const logAtTop = ref(true), newLogs = ref(false)
 const fullTime = (at: string) => new Date(at).toLocaleString('zh-CN', { hour12: false })
+const orderCopyNotice = ref('')
+const notifiedOrdersStorageKey = 'local-agent.notified-orders.v1'
+const notifiedOrders = ref<Record<string, boolean>>(loadNotifiedOrders())
+function loadNotifiedOrders(): Record<string, boolean> {
+ try {
+  const saved: unknown = JSON.parse(localStorage.getItem(notifiedOrdersStorageKey) || '{}')
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {}
+  return Object.fromEntries(Object.entries(saved).filter(([, value]) => value === true))
+ } catch { return {} }
+}
+function notifiedOrderKey(record: OrderDisplay) {
+ return JSON.stringify([props.state.serverURL, props.state.instanceID, props.state.clientNumber, record.taskId, record.id, record.createdAt])
+}
+async function copyPaymentNotice(record: OrderDisplay) {
+ if (!await copyOrderText(viewerNotice(record), '已复制话术并标记已通知')) return
+ notifiedOrders.value[notifiedOrderKey(record)] = true
+ try { localStorage.setItem(notifiedOrdersStorageKey, JSON.stringify(notifiedOrders.value)) }
+ catch { orderCopyNotice.value = '已复制话术并标记已通知，但标记未能保存到本机' }
+}
+let orderCopyTimer: ReturnType<typeof setTimeout> | undefined
+async function copyOrderText(text: string, notice: string) {
+ try {
+  if (!navigator.clipboard?.writeText) throw new Error('当前环境不支持复制')
+  await navigator.clipboard.writeText(text)
+  orderCopyNotice.value = notice
+  if (orderCopyTimer) clearTimeout(orderCopyTimer)
+  orderCopyTimer = setTimeout(() => { orderCopyNotice.value = '' }, 1800)
+  return true
+ } catch (e) { orderCopyNotice.value = `复制失败：${e instanceof Error ? e.message : String(e)}`; return false }
+}
+function viewerNames(record: OrderDisplay) { return record.viewers.map(viewer => viewer.name).filter(Boolean).join(' ') }
+function ticketLabel(ticket: OrderDisplay['details']['bill'][number]) {
+ return `${ticket.region}区${ticket.estateName ? ` · ${ticket.estateName}` : ''}${ticket.row ? ` · ${ticket.row}排${ticket.seat}座` : ''}`
+}
+function viewerNotice(record: OrderDisplay) {
+ const tickets = record.details?.bill?.map(ticket => `${ticketLabel(ticket)} ${ticket.price ? `¥${ticket.price}` : '票价待查询'}`).join('\n') || '座位待查询 票价待查询'
+ const expires = record.details?.order_end_time || '待查询'
+ return `${viewerNames(record)}订单创建已成功\n${tickets}\n订单过期时间${expires}\n请尽快完成支付！完成支付后请告知！`
+}
 async function copyLogs() {
  if (activeID.value === null || copying.value) return
  copying.value = true; copyNotice.value = ''
@@ -310,7 +354,8 @@ function tooltip(event: MouseEvent | FocusEvent, text: string) {
   const r = (event.currentTarget as HTMLElement).getBoundingClientRect()
   tip.value = { text, left: Math.max(8, Math.min(r.left, window.innerWidth - Math.min(340, window.innerWidth - 16) - 8)), top: r.bottom + 6 }
 }
-async function load() { const data = await backend().GetTasks(); if (alive) view.value = data }
+async function load() { const data = await backend().GetTasks()
+    ipBindings.value=(await backend().GetIPPools()).bindings; if (alive) view.value = data }
 async function retryRead() {
   retryingRead.value = true
   try { await load(); readError.value = '' }
@@ -318,7 +363,7 @@ async function retryRead() {
   finally { retryingRead.value = false }
 }
 onMounted(async () => { try { await load(); await pollProtocol() } catch (e) { readError.value = failure(e) } finally { loading.value = false }; protocolTimer = setInterval(() => { now.value = Date.now(); void pollProtocol() }, 2000) })
-onUnmounted(() => { alive = false; if (protocolTimer) clearInterval(protocolTimer); dialog.value?.close(); controlDialog.value?.close() })
+onUnmounted(() => { alive = false; if (orderCopyTimer) clearTimeout(orderCopyTimer); if (protocolTimer) clearInterval(protocolTimer); dialog.value?.close(); controlDialog.value?.close() })
 async function createTask() {
   if (creating.value) return
   creating.value = true; error.value = ''
@@ -423,19 +468,23 @@ async function deleteTask() {
         </div>
       </section>
       </Teleport>
+    <IPPoolPanel v-if="props.page === 'ips'" />
     <section v-if="props.page === 'tasks'" class="tw-body">
       <section class="tw-task-controls" aria-label="任务操作">
       <InventoryPanel :stadium="view.catalog.stadium" @update="inventoryView = $event" @notice="inventoryNotice = $event">
         <template #title><h1>任务 <span class="tw-task-count">{{ view.tasks.length }}</span></h1></template>
         <template #toolbar="{ openSettings, settingsDisabled }">
           <div class="tw-toolbar" role="search" aria-label="任务搜索">
+            <div class="tw-task-search-actions">
+              <button class="tw-primary" :disabled="creating || loading || !!bulkAction" @click="createTask">{{ creating ? '创建中' : '新建任务' }}</button>
             <div class="tw-search"><input v-model="search" type="search" aria-label="搜索任务" placeholder="搜索任务" title="支持搜索任务编号、微信昵称、备注或观演人" autocomplete="off" :disabled="loading" @input="tip = null"/><button v-if="search" class="tw-search-clear" type="button" aria-label="清空搜索" @click="search = ''; tip = null">清空</button></div>
+            </div>
             <div class="tw-task-actions" role="group" aria-label="任务批量操作" title="批量操作作用于当前客户端的全部任务，不受搜索过滤影响">
-              <button class="tw-primary" :disabled="creating || loading || !!bulkAction" @click="createTask">＋ {{ creating ? '正在创建…' : '新建任务' }}</button>
               <button :disabled="bulkBlocked || !bulkTargets('start').length" title="启动全部已就绪且未运行的任务，不受搜索过滤影响" @click="runBulk('start')">全部启动</button>
-              <button v-if="inventoryView?.debugMode && inventoryView.simulation.enabled" :disabled="bulkBlocked || !bulkTargets('simulate').length" title="按比赛开售时间批量启动已就绪任务的模拟验收" @click="runBulk('simulate')">批量模拟验收</button>
               <button :disabled="bulkBlocked || !bulkTargets('stop').length" title="停止全部尚未停止的任务，不受搜索过滤影响" @click="runBulk('stop')">全部停止</button>
               <button :disabled="bulkBlocked || !bulkTargets('refresh').length" title="刷新全部可维护的在线任务，原运行任务完成后自动恢复" @click="runBulk('refresh')">全部刷新</button>
+              <button :disabled="ipBusy" title="全部任务随机切换 IP" aria-label="全部任务随机切换 IP" @click="randomizeIP(0)">切换IP</button>
+              <button v-if="inventoryView?.debugMode && inventoryView.simulation.enabled" :disabled="bulkBlocked || !bulkTargets('simulate').length" title="按比赛开售时间批量启动已就绪任务的模拟验收" @click="runBulk('simulate')">模拟验收</button>
               <button :disabled="settingsDisabled || !!bulkAction" aria-haspopup="dialog" @click="openSettings()">设置</button>
             </div>
           </div>
@@ -452,6 +501,7 @@ async function deleteTask() {
           <div class="tw-account">
             <div class="tw-account-avatar" aria-hidden="true">{{ (task.wechatNickname || '微').slice(0, 1) }}<img v-if="task.protocolAvatar" :src="task.protocolAvatar" alt="" @error="($event.target as HTMLImageElement).hidden = true"/></div>
             <div class="tw-account-title"><strong :title="task.wechatNickname">{{ task.wechatNickname || (task.protocolStatus ? '已绑定账号' : '尚未授权') }}</strong></div>
+            <span class="tw-ip-exits" :title="ipLabel(task.id)">{{ ipLabel(task.id) }}</span>
             <div class="tw-account-badges">
               <span class="tw-status" :title="taskStatus(task).detail"><span class="tw-status-dot" aria-hidden="true"></span>{{ taskStatus(task).label }}</span>
               <span class="tw-account-connection"><span class="tw-account-state" :class="{ online: task.protocolStatus === 'alive' }">{{ task.protocolStatus === 'alive' ? '微信在线' : task.protocolStatus === 'expired' ? '授权失效' : task.protocolStatus ? '微信待检查' : '未绑定微信' }}</span><span class="tw-account-protocol">{{ state.authProtocol === 'yyb' ? 'YYB' : '微信协议' }}</span></span>
@@ -465,14 +515,15 @@ async function deleteTask() {
             <button class="tw-start" :disabled="!!bulkAction || executionBusy.includes(task.id) || (inventoryView?.runs[task.id]?.status === 'stopping') || (!running(task.id) && inventoryView?.runs[task.id]?.status !== 'order_created' && inventoryView?.runs[task.id]?.status !== 'order_verifying' && inventoryView?.runs[task.id]?.status !== 'order_blocked' && (!inventoryView?.clockReady || !inventoryView?.match.enabled))" @click="toggleExecution(task)">{{ inventoryView?.runs[task.id]?.status === 'order_created' ? '再次购票' : ['order_verifying','order_blocked'].includes(inventoryView?.runs[task.id]?.status || '') ? '恢复监控' : inventoryView?.runs[task.id]?.status === 'stopping' ? '正在停止…' : running(task.id) ? '停止' : '启动' }}</button>
             <button :disabled="!!bulkAction || refreshingTasks.includes(task.id) || task.businessStatus === 'loading' || task.protocolStatus !== 'alive'" :title="task.paused ? '恢复业务维护并刷新观演人' : '重新登录业务并刷新观演人'" @click="refreshTask(task)">{{ refreshingTasks.includes(task.id) || task.businessStatus === 'loading' ? '刷新中…' : '刷新' }}</button>
             <button :disabled="!!bulkAction || task.businessStatus === 'loading'" @click="open(task, 'auth')">{{ task.protocolStatus ? '重新授权' : '开始授权' }}</button>
-            <button v-if="inventoryView?.debugMode && inventoryView.simulation.enabled" :disabled="!!bulkAction || running(task.id) || !task.peopleSelected?.length" title="本地模拟库存、下单和订单售后，不访问官方接口" @click="runSimulation(task)">模拟验收</button>
+            <button :disabled="ipBusy" :title="ipLabel(task.id)" @click="randomizeIP(task.id)">切换 IP</button>
             <button :title="task.shippingAddress ? '收货地址已配置' : '收货地址未配置'" @click="open(task, 'address')">收货地址</button>
             <button :disabled="!!bulkAction || running(task.id)" class="tw-operation-delete" @click="open(task, 'delete')">删除</button>
+            <button v-if="inventoryView?.debugMode && inventoryView.simulation.enabled" :disabled="!!bulkAction || running(task.id) || !task.peopleSelected?.length" title="本地模拟库存、下单和订单售后，不访问官方接口" @click="runSimulation(task)">模拟验收</button>
           </div>
         </article>
       </div>
     </section>
-    <section v-else class="tw-orders-page" aria-labelledby="orders-page-title">
+    <section v-else-if="props.page === 'orders'" class="tw-orders-page" aria-labelledby="orders-page-title">
       <header class="tw-orders-heading">
         <div><h1 id="orders-page-title">订单 <span class="tw-task-count">{{ historyOrders.length }}</span></h1></div>
         <button class="tw-operation-delete" :disabled="ordersBusy || !historyOrders.length" @click="deleteAllOrders">全部删除</button>
@@ -482,19 +533,29 @@ async function deleteTask() {
         <span v-if="orderSearch" class="tw-orders-count" role="status">显示 {{ filteredOrders.length }} / {{ historyOrders.length }} 条</span>
       </div>
       <p v-if="ordersError" class="tw-alert" role="alert">{{ ordersError }}</p>
+      <p v-if="orderCopyNotice" class="tw-order-copy-notice" role="status">{{ orderCopyNotice }}</p>
       <div v-if="ordersBusy && !historyOrders.length" class="tw-empty" role="status">正在读取本地订单…</div>
       <div v-else-if="!historyOrders.length" class="tw-empty"><h2>暂无订单记录</h2></div>
       <div v-else-if="!filteredOrders.length" class="tw-empty"><h2>没有匹配的订单</h2><button @click="orderSearch=''">清空筛选</button></div>
       <div v-else class="tw-orders-table-wrap">
         <table class="tw-orders-table">
-          <thead><tr><th>订单 ID / 任务</th><th>观演人</th><th>状态</th><th>票区 / 座位</th><th>支付截止</th><th>金额</th><th>操作</th></tr></thead>
-          <tbody><tr v-for="record in filteredOrders" :key="`${record.taskId}-${record.id}`">
-            <td><button class="tw-order-id" @click="openOrder(record)">{{ record.id }}</button><small v-if="record.simulated" class="tw-order-simulated">本地模拟订单</small><small>任务 {{ record.taskId }} · {{ record.match.name }}</small><small>{{ fullTime(record.createdAt) }}</small><small v-if="record.detailError" class="tw-order-error">详情查询失败：{{ record.detailError }}</small></td>
-            <td>{{ record.viewers.map(v => v.name).join('、') || '—' }}</td>
-            <td><span class="tw-order-payment" :data-paid="record.details?.id ? record.details.status === 6 : null">{{ record.details?.id ? (record.details.status === 6 ? '已付款' : '未付款') : '—' }}</span></td>
+          <thead><tr><th>订单信息</th><th>观演人</th><th>票区 / 座位</th><th>金额</th><th>状态</th><th>创建时间</th><th>支付截止时间</th><th>操作</th></tr></thead>
+          <tbody><tr v-for="record in filteredOrders" :key="`${record.taskId}-${record.id}`" :class="{ 'tw-order-notified': notifiedOrders[notifiedOrderKey(record)] }">
+            <td><button class="tw-order-id" @click="openOrder(record)">{{ record.id }}</button><small>比赛 {{ record.match.id }} · #{{ record.taskId }}</small><small>下单 IP：{{ record.orderIP === 'direct' ? '本机直连' : record.orderIP || '未知' }}</small><small v-if="record.detailError" class="tw-order-error">详情查询失败：{{ record.detailError }}</small></td>
+            <td>
+              <div v-if="record.viewers.length" class="tw-order-viewers">
+                <button class="tw-order-viewer-name" type="button" title="复制全部观演人姓名" @click="copyOrderText(viewerNames(record), '已复制观演人姓名')">{{ viewerNames(record) }}</button>
+                <button class="tw-order-notice" type="button" :title="notifiedOrders[notifiedOrderKey(record)] ? '已通知，点击再次复制支付通知话术' : '复制支付通知话术并标记已通知'" aria-label="复制支付通知话术并标记已通知" @click="copyPaymentNotice(record)">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
+                </button>
+              </div>
+              <span v-else>—</span>
+            </td>
             <td><template v-if="record.details?.bill?.length"><div v-for="ticket in record.details.bill" :key="ticket.id">{{ ticket.region }}区<template v-if="ticket.estateName"> · {{ ticket.estateName }}</template><template v-if="ticket.row"> · {{ ticket.row }}排{{ ticket.seat }}座</template></div></template><span v-else>—</span></td>
-            <td>{{ record.details?.id ? (record.details.order_end_time || '—') : '—' }}</td>
             <td>{{ record.details?.id && record.details.payable ? `¥${record.details.payable}` : '—' }}</td>
+            <td><span class="tw-order-payment" :data-paid="record.details?.id ? record.details.status === 6 : null">{{ record.details?.id ? (record.details.status === 6 ? '已付款' : '未付款') : '—' }}</span></td>
+            <td class="tw-order-created"><time :datetime="record.createdAt">{{ fullTime(record.createdAt) }}</time></td>
+            <td class="tw-order-paid">{{ record.details?.id ? (record.details.order_end_time || '—') : '—' }}</td>
             <td><div class="tw-orders-row-actions"><button :disabled="ordersBusy" @click="refreshOrder(record)">{{ ordersBusy ? '处理中…' : '刷新' }}</button><button @click="openOrder(record)">详情</button><button class="tw-operation-delete" :disabled="ordersBusy" @click="deleteOrder(record)">删除</button></div></td>
           </tr></tbody>
         </table>
@@ -597,8 +658,9 @@ async function deleteTask() {
 .tw-value.tw-people-ready{display:flex;align-items:center;gap:5px}.tw-people-ready>span{min-width:0;overflow:hidden;text-overflow:ellipsis}.tw-business-ready-icon{width:14px;height:14px;flex-shrink:0;color:var(--active)}
 .tw-people-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.tw-person{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.tw-person-choice{display:flex;align-items:center;gap:12px;flex:1;min-width:0}.tw-person-details{flex-shrink:0}.tw-person small{overflow-wrap:anywhere}.tw-person{flex-wrap:wrap}.tw-person span{display:flex;flex-direction:column;gap:4px}.tw-person small{color:var(--muted)}
 .tw-order-head-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}.tw-order-head-actions .tw-operation-delete{color:var(--app-error)}
-.tw-orders-page{min-width:0;padding:26px 22px 18px}.tw-orders-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.tw-orders-heading p{margin-top:4px;font-size:12px}.tw-orders-heading .tw-operation-delete,.tw-orders-row-actions .tw-operation-delete{color:var(--app-error)}
-.tw-orders-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.tw-orders-search{display:flex;align-items:center;gap:8px;min-width:280px;color:var(--muted);font-size:12px}.tw-orders-search input{box-sizing:border-box;width:min(300px,45vw);padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font:inherit}.tw-orders-search button{padding:5px 8px;font-size:12px}.tw-orders-count,.tw-orders-footer{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.tw-orders-table-wrap{width:100%;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel)}.tw-orders-table{width:100%;min-width:980px;table-layout:fixed;border-collapse:collapse;font-size:12px}.tw-orders-table th,.tw-orders-table td{box-sizing:border-box;padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle;overflow-wrap:anywhere}.tw-orders-table th{position:sticky;top:0;background:var(--soft);color:var(--muted);font-weight:550;white-space:nowrap}.tw-orders-table tbody tr:last-child td{border-bottom:0}.tw-orders-table tbody tr:hover{background:var(--soft)}.tw-orders-table th:nth-child(1){width:17%}.tw-orders-table th:nth-child(2){width:13%}.tw-orders-table th:nth-child(3){width:9%}.tw-orders-table th:nth-child(4){width:22%}.tw-orders-table th:nth-child(5){width:16%}.tw-orders-table th:nth-child(6){width:9%}.tw-orders-table th:nth-child(7){width:14%}.tw-orders-table td:first-child{font-variant-numeric:tabular-nums}.tw-orders-table td:first-child small{display:block;margin-top:2px;color:var(--muted);font-size:10px}.tw button.tw-order-id{display:block;padding:0;border:0;background:transparent;color:var(--active);font-weight:600;font-variant-numeric:tabular-nums}.tw button.tw-order-id:hover{background:transparent;text-decoration:underline}.tw-order-payment{white-space:nowrap;color:var(--muted)}.tw-order-payment[data-paid=true]{color:var(--app-success);font-weight:600}.tw-orders-row-actions{display:flex;align-items:center;flex-wrap:wrap;gap:4px}.tw-orders-row-actions button{padding:4px 6px;font-size:11px;white-space:nowrap}.tw-orders-footer{padding:10px 2px}.tw-orders-page .tw-empty{margin-top:14px;padding:42px 16px}.tw-orders-page .tw-empty p{margin:8px 0 14px}
+.tw-orders-page{box-sizing:border-box;display:flex;flex-direction:column;height:100dvh;min-width:0;min-height:0;overflow:hidden;padding:26px 22px 18px}.tw-orders-page> :not(.tw-orders-table-wrap){flex-shrink:0}.tw-orders-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.tw-orders-heading p{margin-top:4px;font-size:12px}.tw-orders-heading .tw-operation-delete,.tw-orders-row-actions .tw-operation-delete{color:var(--app-error)}
+.tw-orders-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.tw-orders-search{display:flex;align-items:center;gap:8px;min-width:280px;color:var(--muted);font-size:12px}.tw-orders-search input{box-sizing:border-box;width:min(300px,45vw);padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font:inherit}.tw-orders-search button{padding:5px 8px;font-size:12px}.tw-orders-count,.tw-orders-footer{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.tw-orders-table-wrap{box-sizing:border-box;flex:1;min-height:0;width:100%;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel)}.tw-orders-table{width:100%;min-width:1280px;table-layout:fixed;border-collapse:collapse;font-size:12px}.tw-orders-table th,.tw-orders-table td{box-sizing:border-box;padding:2px 4px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle;overflow-wrap:anywhere}.tw-orders-table th{position:sticky;top:0;z-index:1;background:var(--soft);color:var(--muted);font-weight:550;white-space:nowrap}.tw-orders-table tbody tr:last-child td{border-bottom:0}.tw-orders-table tbody tr:hover{background:var(--soft)}.tw-orders-table tbody tr.tw-order-notified{background:color-mix(in srgb,var(--app-success) 14%,var(--panel))}.tw-orders-table tbody tr.tw-order-notified:hover{background:color-mix(in srgb,var(--app-success) 21%,var(--panel))}.tw-orders-table th:nth-child(1){width:15%}.tw-orders-table th:nth-child(2){width:15%}.tw-orders-table th:nth-child(3){width:12%}.tw-orders-table th:nth-child(4){width:10%}.tw-orders-table th:nth-child(5){width:10%}.tw-orders-table th:nth-child(6){width:12%}.tw-orders-table th:nth-child(7){width:12%}.tw-orders-table th:nth-child(8){width:14%}.tw-orders-table td:first-child{font-variant-numeric:tabular-nums}.tw-orders-table td:first-child small{display:block;margin-top:2px;color:var(--muted);font-size:10px}.tw-order-copy-notice{flex-shrink:0;margin:-4px 0 8px;padding:6px 9px;border-radius:5px;background:var(--soft);color:var(--app-success);font-size:12px}.tw-order-viewers{display:flex;align-items:center;flex-wrap:wrap;gap:3px 6px}.tw button.tw-order-viewer-name{min-width:0;padding:0;border:0;background:transparent;color:var(--active);font-size:12px;text-align:left;overflow-wrap:anywhere}.tw button.tw-order-viewer-name:hover{background:transparent;text-decoration:underline}.tw button.tw-order-notice{display:inline-grid;place-items:center;width:22px;height:22px;min-width:22px;padding:3px;border:0;background:transparent;color:var(--muted)}.tw button.tw-order-notice:hover{background:var(--soft);color:var(--active)}.tw-order-notice svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}.tw button.tw-order-id{display:block;padding:0;border:0;background:transparent;color:var(--active);font-weight:600;font-variant-numeric:tabular-nums}.tw button.tw-order-id:hover{background:transparent;text-decoration:underline}.tw-order-payment{white-space:nowrap;color:var(--muted)}.tw-order-payment[data-paid=true]{color:var(--app-success);font-weight:600}.tw-orders-row-actions{display:flex;align-items:center;flex-wrap:nowrap;gap:4px;white-space:nowrap}.tw-orders-row-actions button{padding:4px 6px;font-size:11px;white-space:nowrap}.tw-orders-footer{padding:10px 2px}.tw-orders-page .tw-empty{margin-top:14px;padding:42px 16px}.tw-orders-page .tw-empty p{margin:8px 0 14px}
+.tw-order-created,.tw-order-paid{font-variant-numeric:tabular-nums;white-space:nowrap}
 .tw-orders-table td:first-child small.tw-order-error{color:var(--app-warning)}
 .tw-order-simulated{color:var(--app-warning)!important;font-weight:600}
 .tw-order-history{max-height:65vh;overflow:auto}.tw-order-record{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 16px;padding:12px 0;border-bottom:1px solid var(--line);align-items:center}.tw-order-record>div{min-width:0;overflow-wrap:anywhere}.tw-order-record>div:first-child{display:flex;flex-direction:column}.tw-order-record .tw-muted{font-size:12px;color:var(--muted)}.tw-order-actions{grid-column:2;grid-row:1/3;display:flex;gap:6px}.tw-order-actions .tw-operation-delete{color:var(--app-error)}.tw-order-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.tw-order-status{font-size:13px;font-weight:600;color:var(--app-accent)}.tw-order-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--line);border-left:1px solid var(--line)}.tw-order-facts>div{min-width:0;padding:9px 11px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.tw-order-facts small,.tw-ticket small{display:block;font-size:11px;color:var(--muted);overflow-wrap:anywhere}.tw-order-facts strong{font-size:12px;font-weight:550;overflow-wrap:anywhere}.tw-ticket-section{margin-top:20px}.tw-ticket-section h3{padding-bottom:8px;border-bottom:1px solid var(--line)}.tw-ticket{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;padding:11px 2px;border-bottom:1px solid var(--line)}.tw-ticket strong,.tw-ticket b{font-size:12px;font-weight:550}.tw-ticket>div:last-child{text-align:right}.tw-danger{color:var(--app-error)!important}
@@ -613,7 +675,7 @@ async function deleteTask() {
 .tw-scan-dialog .tw-dialog-head{position:static;padding:6px 12px;border-radius:12px 12px 0 0}.tw-scan-dialog .tw-dialog-head h2{font-size:13px}.tw-scan-dialog .tw-dialog-head p{display:none}.tw-scan-dialog .tw-dialog-content{padding:6px 10px;overflow:visible}.tw-scan-dialog .tw-dialog-footer{display:none}
 .tw-service{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:18px}.tw-service>div{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tw-service span,.tw-service small{color:var(--muted);font-size:12px}.tw-service p{width:100%;font-size:12px;color:var(--app-warning)}.tw-auth{text-align:center}.tw-auth img{display:block;width:220px;max-width:100%;height:auto;margin:14px auto;background:white}.tw-auth p{font-size:13px;margin:12px 0;overflow-wrap:anywhere}
 .tw{--bg:var(--app-bg);--panel:var(--app-panel);--ink:var(--app-ink);--muted:var(--app-muted);--line:var(--app-line);--soft:var(--app-soft);--active:var(--app-accent);--selected:var(--app-selected);max-width:none;min-height:100dvh;margin:0;padding:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}
-.tw button,.tw select{font:inherit}.tw button{color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 11px}.tw button:hover:not(:disabled){background:var(--soft)}.tw button:focus-visible,.tw input:focus-visible,.tw select:focus-visible{outline:2px solid var(--active);outline-offset:3px}.tw button.tw-primary{background:var(--active);border-color:var(--active);color:var(--app-on-accent)}.tw button.tw-danger{background:var(--app-danger);border-color:var(--app-danger);color:var(--app-on-danger)}.tw button:disabled{cursor:default;opacity:.55}.tw h1,.tw h2,.tw h3,.tw p{margin:0;letter-spacing:normal}.tw h1{font-size:22px;font-weight:600}.tw h2{font-size:17px;font-weight:600}.tw h3{font-size:14px;font-weight:600}.tw p{color:var(--muted);line-height:1.6}.tw label{color:inherit;font-size:inherit;margin:0}.tw input[type=checkbox]{accent-color:var(--active);width:15px;height:15px;margin:0;flex-shrink:0}.tw-chrome{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:18px 24px;background:var(--panel);border-bottom:1px solid var(--line)}.tw-brand{font-weight:600;letter-spacing:.06em}.tw-brand span{font-size:11px;font-weight:400;color:var(--muted)}.tw-session{display:flex;align-items:center;gap:16px;font-size:12px;color:var(--muted)}.tw-session .disconnected{color:var(--app-warning)}.tw button.tw-link{padding:0;border:0;background:transparent;color:var(--active);font-size:12px;text-align:left}.tw-body{padding:26px 22px 18px}.tw-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px}.tw-heading p{font-size:12px;margin-top:4px}.tw-divider{margin:0 8px;color:var(--line)}.tw-columns,.tw-task{display:grid;grid-template-columns:32px minmax(140px,1.1fr) minmax(115px,1fr) minmax(85px,.7fr) minmax(140px,1.2fr) minmax(150px,1.3fr) 36px;gap:12px;align-items:center}.tw-columns{padding:0 14px 9px;font-size:12px;color:var(--muted)}.tw-task{padding:8px 10px;height:104px;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-bottom:10px}.tw-task>*{min-width:0}.tw-number{font-size:17px;color:var(--muted);font-variant-numeric:tabular-nums}.tw-account{position:relative;padding-left:38px;display:flex;flex-direction:column;align-items:flex-start;gap:3px;overflow:hidden}.tw-account-avatar{position:absolute;left:0;top:2px;width:30px;height:30px;object-fit:cover;border-radius:50%;background:var(--soft)}.tw-account strong{font-weight:600;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tw-account>span{font-size:12px;color:var(--muted);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tw button.tw-summary{height:60px;width:100%;background:var(--soft);border-color:transparent;text-align:left;padding:8px 9px;min-width:0}.tw button.tw-summary:hover{border-color:var(--active);background:var(--selected)}.tw-field,.tw-value{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tw-field{font-size:12px;color:var(--muted);margin-bottom:3px}.tw button.tw-log{display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;text-align:left;align-self:stretch;min-height:0;max-height:100%;padding:4px 0;border:0;background:transparent;font-size:12px;font-weight:400;color:var(--muted);overflow:hidden;white-space:normal;line-height:18px}.tw button.tw-log:hover{background:var(--soft)}.tw-log time{display:block;flex-shrink:0;font-size:11px;margin-bottom:3px}.tw-log>span{flex-shrink:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}.tw button.tw-delete{border:0;background:transparent;color:var(--muted);font-size:12px;padding:5px 0;white-space:nowrap}.tw-footer{display:flex;justify-content:space-between;gap:12px;border:0;padding-top:6px;font-size:12px;color:var(--muted)}.tw-empty{text-align:center;padding:65px 16px;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-bottom:14px}.tw-empty p{margin:10px 0 22px}.tw-alert{border:1px solid var(--app-warning-line);background:var(--app-warning-bg);color:var(--app-warning);font-size:12px;padding:10px 12px;border-radius:6px;margin-bottom:16px;overflow-wrap:anywhere}.tw-error-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.tw-tooltip{position:fixed;max-width:min(340px,calc(100vw - 16px));max-height:240px;overflow:auto;background:var(--panel);border:1px solid var(--line);color:var(--ink);box-shadow:0 5px 18px var(--app-shadow);border-radius:7px;padding:10px 12px;font-size:12px;overflow-wrap:anywhere;z-index:20;pointer-events:none}.tw-dialog{padding:0;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:12px;width:420px;max-width:calc(100vw - 24px);max-height:85vh;box-shadow:0 15px 50px var(--app-shadow)}.tw-dialog.wide{width:780px}.tw-dialog::backdrop{background:var(--app-backdrop)}.tw-dialog-head{position:sticky;top:0;z-index:2;background:var(--panel);padding:18px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}.tw-dialog-head p{font-size:12px;margin-top:4px}.tw button.tw-close{border:0;padding:5px 9px;color:var(--muted)}.tw-dialog-content{padding:20px}.tw-dialog-footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:var(--muted);z-index:2}.tw-dialog-footer>div{display:flex;gap:8px}.tw-order-dialog-footer{justify-content:flex-end}.tw-switch{display:inline-flex;border:1px solid var(--line);border-radius:7px;padding:3px;gap:2px;margin-bottom:16px}.tw-switch button{border:0;background:transparent;padding:5px 12px;font-size:13px}.tw-switch button[aria-pressed=true]{color:var(--app-on-accent);background:var(--active)}.tw-options{border:0;padding:0;margin:0;min-width:0}.tw-tier-options{display:flex;gap:8px;flex-wrap:wrap}.tw label.tw-choice{display:flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--panel);padding:9px 12px;border-radius:6px;min-width:90px;cursor:pointer}.tw label.tw-choice.checked{background:var(--selected);border-color:var(--active)}.tw-choice small{display:block;font-size:11px;color:var(--muted)}.tw-note{font-size:12px;margin-top:12px!important}.tw-area-group+.tw-area-group{margin-top:16px}.tw label.tw-group-heading{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:8px;cursor:pointer}.tw-group-heading small{color:var(--muted);font-size:12px}.tw-area-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:7px}.tw label.tw-area{height:56px;min-width:0;padding:7px 8px}.tw-area-copy{flex:1;min-width:0}.tw-area-top{display:flex;gap:6px;align-items:center;min-width:0;white-space:nowrap}.tw-area-code{flex-shrink:0}.tw-special{font-size:11px;color:var(--muted);min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tw-area small{white-space:nowrap}.tw-unavailable{background:var(--soft);padding:18px;border-radius:7px}.tw-unavailable p{font-size:13px;margin:8px 0 14px}.tw-delete-note{font-size:13px}.tw-protocol{display:block;margin-bottom:20px!important;font-size:13px!important}.tw select{display:block;width:100%;margin-top:8px;padding:9px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px}
+.tw button,.tw select{font:inherit}.tw button{color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 11px}.tw button:hover:not(:disabled){background:var(--soft)}.tw button:focus-visible,.tw input:focus-visible,.tw select:focus-visible{outline:2px solid var(--active);outline-offset:3px}.tw button.tw-primary{background:var(--active);border-color:var(--active);color:var(--app-on-accent)}.tw button.tw-danger{background:var(--app-danger);border-color:var(--app-danger);color:var(--app-on-danger)}.tw button:disabled{cursor:default;opacity:.55}.tw h1,.tw h2,.tw h3,.tw p{margin:0;letter-spacing:normal}.tw h1{font-size:22px;font-weight:600}.tw h2{font-size:17px;font-weight:600}.tw h3{font-size:14px;font-weight:600}.tw p{color:var(--muted);line-height:1.6}.tw label{color:inherit;font-size:inherit;margin:0}.tw input[type=checkbox]{accent-color:var(--active);width:15px;height:15px;margin:0;flex-shrink:0}.tw-chrome{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:18px 24px;background:var(--panel);border-bottom:1px solid var(--line)}.tw-brand{font-weight:600;letter-spacing:.06em}.tw-brand span{font-size:11px;font-weight:400;color:var(--muted)}.tw-session{display:flex;align-items:center;gap:16px;font-size:12px;color:var(--muted)}.tw-session .disconnected{color:var(--app-warning)}.tw button.tw-link{padding:0;border:0;background:transparent;color:var(--active);font-size:12px;text-align:left}.tw-body{padding:26px 22px 18px}.tw-body{box-sizing:border-box;display:flex;flex-direction:column;height:100dvh;min-height:0;overflow:hidden}.tw-body>.tw-task-controls,.tw-body>.tw-columns,.tw-body>.tw-empty{flex-shrink:0}.tw-list{flex:1;min-height:0;overflow:auto}.tw-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px}.tw-heading p{font-size:12px;margin-top:4px}.tw-divider{margin:0 8px;color:var(--line)}.tw-columns,.tw-task{display:grid;grid-template-columns:32px minmax(140px,1.1fr) minmax(115px,1fr) minmax(85px,.7fr) minmax(140px,1.2fr) minmax(150px,1.3fr) 36px;gap:12px;align-items:center}.tw-columns{padding:0 14px 9px;font-size:12px;color:var(--muted)}.tw-task{padding:8px 10px;height:104px;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-bottom:10px}.tw-task>*{min-width:0}.tw-number{font-size:17px;color:var(--muted);font-variant-numeric:tabular-nums}.tw-account{position:relative;padding-left:38px;display:flex;flex-direction:column;align-items:flex-start;gap:3px;overflow:hidden}.tw-account-avatar{position:absolute;left:0;top:2px;width:30px;height:30px;object-fit:cover;border-radius:50%;background:var(--soft)}.tw-account strong{font-weight:600;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tw-account>span{font-size:12px;color:var(--muted);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tw button.tw-summary{height:60px;width:100%;background:var(--soft);border-color:transparent;text-align:left;padding:8px 9px;min-width:0}.tw button.tw-summary:hover{border-color:var(--active);background:var(--selected)}.tw-field,.tw-value{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tw-field{font-size:12px;color:var(--muted);margin-bottom:3px}.tw button.tw-log{display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;text-align:left;align-self:stretch;min-height:0;max-height:100%;padding:4px 0;border:0;background:transparent;font-size:12px;font-weight:400;color:var(--muted);overflow:hidden;white-space:normal;line-height:18px}.tw button.tw-log:hover{background:var(--soft)}.tw-log time{display:block;flex-shrink:0;font-size:11px;margin-bottom:3px}.tw-log>span{flex-shrink:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}.tw button.tw-delete{border:0;background:transparent;color:var(--muted);font-size:12px;padding:5px 0;white-space:nowrap}.tw-footer{display:flex;justify-content:space-between;gap:12px;border:0;padding-top:6px;font-size:12px;color:var(--muted)}.tw-empty{text-align:center;padding:65px 16px;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-bottom:14px}.tw-empty p{margin:10px 0 22px}.tw-alert{border:1px solid var(--app-warning-line);background:var(--app-warning-bg);color:var(--app-warning);font-size:12px;padding:10px 12px;border-radius:6px;margin-bottom:16px;overflow-wrap:anywhere}.tw-error-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.tw-tooltip{position:fixed;max-width:min(340px,calc(100vw - 16px));max-height:240px;overflow:auto;background:var(--panel);border:1px solid var(--line);color:var(--ink);box-shadow:0 5px 18px var(--app-shadow);border-radius:7px;padding:10px 12px;font-size:12px;overflow-wrap:anywhere;z-index:20;pointer-events:none}.tw-dialog{padding:0;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:12px;width:420px;max-width:calc(100vw - 24px);max-height:85vh;box-shadow:0 15px 50px var(--app-shadow)}.tw-dialog.wide{width:780px}.tw-dialog::backdrop{background:var(--app-backdrop)}.tw-dialog-head{position:sticky;top:0;z-index:2;background:var(--panel);padding:18px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}.tw-dialog-head p{font-size:12px;margin-top:4px}.tw button.tw-close{border:0;padding:5px 9px;color:var(--muted)}.tw-dialog-content{padding:20px}.tw-dialog-footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:var(--muted);z-index:2}.tw-dialog-footer>div{display:flex;gap:8px}.tw-order-dialog-footer{justify-content:flex-end}.tw-switch{display:inline-flex;border:1px solid var(--line);border-radius:7px;padding:3px;gap:2px;margin-bottom:16px}.tw-switch button{border:0;background:transparent;padding:5px 12px;font-size:13px}.tw-switch button[aria-pressed=true]{color:var(--app-on-accent);background:var(--active)}.tw-options{border:0;padding:0;margin:0;min-width:0}.tw-tier-options{display:flex;gap:8px;flex-wrap:wrap}.tw label.tw-choice{display:flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--panel);padding:9px 12px;border-radius:6px;min-width:90px;cursor:pointer}.tw label.tw-choice.checked{background:var(--selected);border-color:var(--active)}.tw-choice small{display:block;font-size:11px;color:var(--muted)}.tw-note{font-size:12px;margin-top:12px!important}.tw-area-group+.tw-area-group{margin-top:16px}.tw label.tw-group-heading{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:8px;cursor:pointer}.tw-group-heading small{color:var(--muted);font-size:12px}.tw-area-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:7px}.tw label.tw-area{height:56px;min-width:0;padding:7px 8px}.tw-area-copy{flex:1;min-width:0}.tw-area-top{display:flex;gap:6px;align-items:center;min-width:0;white-space:nowrap}.tw-area-code{flex-shrink:0}.tw-special{font-size:11px;color:var(--muted);min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tw-area small{white-space:nowrap}.tw-unavailable{background:var(--soft);padding:18px;border-radius:7px}.tw-unavailable p{font-size:13px;margin:8px 0 14px}.tw-delete-note{font-size:13px}.tw-protocol{display:block;margin-bottom:20px!important;font-size:13px!important}.tw select{display:block;width:100%;margin-top:8px;padding:9px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px}
 .tw button.tw-primary:hover:not(:disabled){background:var(--app-accent-hover)}.tw button.tw-danger:hover:not(:disabled){background:var(--app-danger-hover)}
 .tw-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px}.tw-search{position:relative;flex:1;max-width:420px;min-width:0}.tw .tw-search input{display:block;width:100%;min-width:0;margin:0;padding:10px 58px 10px 12px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);font:inherit;appearance:none}.tw-search input::-webkit-search-cancel-button{appearance:none}.tw .tw-search input::placeholder{color:var(--muted);font-size:12px}.tw .tw-search input:hover:not(:disabled){border-color:var(--active)}.tw button.tw-search-clear{position:absolute;right:5px;top:50%;transform:translateY(-50%);padding:5px 8px;border:0;background:transparent;color:var(--active);font-size:12px}.tw-search-count{color:var(--muted);font-size:12px;white-space:nowrap}
 @media(max-width:480px){.tw-search{flex-basis:100%;max-width:none}.tw-toolbar{gap:8px}}
@@ -716,16 +778,22 @@ async function deleteTask() {
 </style>
 
 <style scoped>
-.tw-task-controls .tw-toolbar{display:grid;grid-template-columns:minmax(180px,220px) minmax(0,1fr);align-items:center;gap:12px}
+.tw-task-controls .tw-toolbar{display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);align-items:center;gap:12px}
+.tw-task-search-actions{display:flex;align-items:center;gap:8px;min-width:0}
+.tw-task-search-actions>button{flex-shrink:0;min-height:36px;padding:7px 10px;font-size:12px;white-space:nowrap}
 .tw-task-controls .tw-search{max-width:220px;width:100%}
 .tw-task-controls .tw-task-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;min-width:0}
 .tw-task-controls .tw-task-actions button{min-height:36px;padding:7px 10px;font-size:12px;white-space:nowrap}
 .tw-toast-details{margin-top:4px}
 .tw-toast-retry{padding:0;border:0;background:transparent;color:inherit;font:inherit;text-decoration:underline}
-@container client-workspace (max-width:720px){.tw-task-controls .tw-toolbar{grid-template-columns:minmax(0,1fr)}.tw-task-controls .tw-task-actions{justify-content:flex-start}}
+@container client-workspace (max-width:720px){.tw-task-controls .tw-toolbar{grid-template-columns:minmax(0,1fr)}}
 </style>
 
 <style scoped>
 .tw .tw-search input{height:32px;padding:5px 44px 5px 10px;font-size:12px;border-radius:5px}
 .tw button.tw-search-clear{right:3px;padding:3px 5px;font-size:11px}
 </style>
+
+
+
+<style scoped>.tw-account>span.tw-ip-exits{font-size:10px;max-width:100%;line-height:14px}.tw-task{height:156px;grid-template-rows:90px 28px}.tw-account{gap:2px}</style>
