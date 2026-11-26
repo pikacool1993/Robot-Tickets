@@ -40,13 +40,6 @@ async function deleteAllOrders() {
 async function openOrder(record: OrderDisplay) {
  selectedOrder.value=record;ordersError.value='';await nextTick();ordersDialog.value?.showModal()
 }
-async function refreshOrder(record: OrderDisplay) {
- if (ordersBusy.value) return
- ordersBusy.value=true;ordersError.value=''
- try { await backend().RefreshOrderDetail(record.taskId,record.id);historyOrders.value=await backend().GetOrderHistory();if(selectedOrder.value?.taskId===record.taskId&&selectedOrder.value.id===record.id)selectedOrder.value=historyOrders.value.find(o=>o.taskId===record.taskId&&o.id===record.id)||selectedOrder.value }
- catch(e) { ordersError.value=failure(e);try{historyOrders.value=await backend().GetOrderHistory()}catch{} }
- finally { ordersBusy.value=false }
-}
 async function runSimulation(task: Task) {
  if (ordersBusy.value || running(task.id)) return
  ordersBusy.value=true
@@ -288,6 +281,12 @@ const logList = ref<HTMLElement | null>(null)
 const logAtTop = ref(true), newLogs = ref(false)
 const fullTime = (at: string) => new Date(at).toLocaleString('zh-CN', { hour12: false })
 const orderCopyNotice = ref('')
+const orderCopyRevision = ref(0), orderCopyWarning = ref(false)
+function showOrderCopyNotice(message: string, warning = false) {
+ orderCopyWarning.value = warning
+ orderCopyNotice.value = message
+ orderCopyRevision.value++
+}
 const notifiedOrdersStorageKey = 'local-agent.notified-orders.v1'
 const notifiedOrders = ref<Record<string, boolean>>(loadNotifiedOrders())
 function loadNotifiedOrders(): Record<string, boolean> {
@@ -302,20 +301,22 @@ function notifiedOrderKey(record: OrderDisplay) {
 }
 async function copyPaymentNotice(record: OrderDisplay) {
  if (!await copyOrderText(viewerNotice(record), '已复制话术并标记已通知')) return
- notifiedOrders.value[notifiedOrderKey(record)] = true
- try { localStorage.setItem(notifiedOrdersStorageKey, JSON.stringify(notifiedOrders.value)) }
- catch { orderCopyNotice.value = '已复制话术并标记已通知，但标记未能保存到本机' }
+ setOrderNotified(record, true)
 }
-let orderCopyTimer: ReturnType<typeof setTimeout> | undefined
+function setOrderNotified(record: OrderDisplay, checked: boolean) {
+ const key = notifiedOrderKey(record)
+ if (checked) notifiedOrders.value[key] = true
+ else delete notifiedOrders.value[key]
+ try { localStorage.setItem(notifiedOrdersStorageKey, JSON.stringify(notifiedOrders.value)) }
+ catch { showOrderCopyNotice('通知状态已修改，但未能保存到本机', true) }
+}
 async function copyOrderText(text: string, notice: string) {
  try {
   if (!navigator.clipboard?.writeText) throw new Error('当前环境不支持复制')
   await navigator.clipboard.writeText(text)
-  orderCopyNotice.value = notice
-  if (orderCopyTimer) clearTimeout(orderCopyTimer)
-  orderCopyTimer = setTimeout(() => { orderCopyNotice.value = '' }, 1800)
+  showOrderCopyNotice(notice)
   return true
- } catch (e) { orderCopyNotice.value = `复制失败：${e instanceof Error ? e.message : String(e)}`; return false }
+ } catch (e) { showOrderCopyNotice(`复制失败：${e instanceof Error ? e.message : String(e)}`, true); return false }
 }
 function viewerNames(record: OrderDisplay) { return record.viewers.map(viewer => viewer.name).filter(Boolean).join(' ') }
 function ticketLabel(ticket: OrderDisplay['details']['bill'][number]) {
@@ -363,7 +364,7 @@ async function retryRead() {
   finally { retryingRead.value = false }
 }
 onMounted(async () => { try { await load(); await pollProtocol() } catch (e) { readError.value = failure(e) } finally { loading.value = false }; protocolTimer = setInterval(() => { now.value = Date.now(); void pollProtocol() }, 2000) })
-onUnmounted(() => { alive = false; if (orderCopyTimer) clearTimeout(orderCopyTimer); if (protocolTimer) clearInterval(protocolTimer); dialog.value?.close(); controlDialog.value?.close() })
+onUnmounted(() => { alive = false; if (protocolTimer) clearInterval(protocolTimer); dialog.value?.close(); controlDialog.value?.close() })
 async function createTask() {
   if (creating.value) return
   creating.value = true; error.value = ''
@@ -456,6 +457,7 @@ async function deleteTask() {
           </div>
         </TaskToast>
       </div>
+      <div v-if="props.page === 'orders'" class="task-toast-stack" role="region" aria-label="订单通知"><TaskToast :key="orderCopyRevision" :message="orderCopyNotice" :warning="orderCopyWarning" /></div>
     </Teleport>
     <Teleport defer to="#client-sidebar-protocol">
       <section class="tw-service sidebar-service" aria-label="协议服务">
@@ -533,30 +535,29 @@ async function deleteTask() {
         <span v-if="orderSearch" class="tw-orders-count" role="status">显示 {{ filteredOrders.length }} / {{ historyOrders.length }} 条</span>
       </div>
       <p v-if="ordersError" class="tw-alert" role="alert">{{ ordersError }}</p>
-      <p v-if="orderCopyNotice" class="tw-order-copy-notice" role="status">{{ orderCopyNotice }}</p>
       <div v-if="ordersBusy && !historyOrders.length" class="tw-empty" role="status">正在读取本地订单…</div>
       <div v-else-if="!historyOrders.length" class="tw-empty"><h2>暂无订单记录</h2></div>
       <div v-else-if="!filteredOrders.length" class="tw-empty"><h2>没有匹配的订单</h2><button @click="orderSearch=''">清空筛选</button></div>
       <div v-else class="tw-orders-table-wrap">
         <table class="tw-orders-table">
-          <thead><tr><th>订单信息</th><th>观演人</th><th>票区 / 座位</th><th>金额</th><th>状态</th><th>创建时间</th><th>支付截止时间</th><th>操作</th></tr></thead>
+          <thead><tr><th>订单信息</th><th>观演人</th><th>任务信息</th><th>票区 / 座位 / 单价</th><th>状态</th><th>创建时间</th><th>支付截止时间</th><th>操作</th></tr></thead>
           <tbody><tr v-for="record in filteredOrders" :key="`${record.taskId}-${record.id}`" :class="{ 'tw-order-notified': notifiedOrders[notifiedOrderKey(record)] }">
-            <td><button class="tw-order-id" @click="openOrder(record)">{{ record.id }}</button><small>比赛 {{ record.match.id }} · #{{ record.taskId }}</small><small>下单 IP：{{ record.orderIP === 'direct' ? '本机直连' : record.orderIP || '未知' }}</small><small v-if="record.detailError" class="tw-order-error">详情查询失败：{{ record.detailError }}</small></td>
             <td>
-              <div v-if="record.viewers.length" class="tw-order-viewers">
-                <button class="tw-order-viewer-name" type="button" title="复制全部观演人姓名" @click="copyOrderText(viewerNames(record), '已复制观演人姓名')">{{ viewerNames(record) }}</button>
-                <button class="tw-order-notice" type="button" :title="notifiedOrders[notifiedOrderKey(record)] ? '已通知，点击再次复制支付通知话术' : '复制支付通知话术并标记已通知'" aria-label="复制支付通知话术并标记已通知" @click="copyPaymentNotice(record)">
+              <button class="tw-order-id" :title="record.detailError ? `${record.id} · 详情查询失败：${record.detailError}` : record.id" :class="{ 'tw-order-detail-error': record.detailError }" @click="openOrder(record)">{{ record.id }}</button>
+              <div class="tw-order-notification-actions">
+                <label class="tw-order-notified-toggle"><input type="checkbox" :checked="!!notifiedOrders[notifiedOrderKey(record)]" :aria-label="`订单 ${record.id} 已通知客户`" @change="setOrderNotified(record, ($event.target as HTMLInputElement).checked)" /></label>
+                <button class="tw-order-notice" type="button" :disabled="!record.viewers.length" :title="notifiedOrders[notifiedOrderKey(record)] ? '已通知，点击再次复制支付通知话术' : '复制支付通知话术并标记已通知'" aria-label="复制支付通知话术并标记已通知" @click="copyPaymentNotice(record)">
                   <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
                 </button>
               </div>
-              <span v-else>—</span>
             </td>
-            <td><template v-if="record.details?.bill?.length"><div v-for="ticket in record.details.bill" :key="ticket.id">{{ ticket.region }}区<template v-if="ticket.estateName"> · {{ ticket.estateName }}</template><template v-if="ticket.row"> · {{ ticket.row }}排{{ ticket.seat }}座</template></div></template><span v-else>—</span></td>
-            <td>{{ record.details?.id && record.details.payable ? `¥${record.details.payable}` : '—' }}</td>
+            <td><button v-if="record.viewers.length" class="tw-order-viewer-name" type="button" title="复制全部观演人姓名" @click="copyOrderText(viewerNames(record), '已复制观演人姓名')">{{ viewerNames(record) }}</button><span v-else>—</span></td>
+            <td class="tw-order-task-info"><div :title="`比赛 ${record.match.id} · #${record.taskId}`">比赛 {{ record.match.id }} · #{{ record.taskId }}</div><small :title="`下单 IP：${record.orderIP === 'direct' ? '本机直连' : record.orderIP || '未知'}`">下单 IP：{{ record.orderIP === 'direct' ? '本机直连' : record.orderIP || '未知' }}</small></td>
+            <td><template v-if="record.details?.bill?.length"><div v-for="ticket in record.details.bill" :key="ticket.id">{{ ticketLabel(ticket) }} <span class="tw-order-ticket-price">{{ ticket.price ? `¥${ticket.price}` : '—' }}</span></div></template><span v-else>—</span></td>
             <td><span class="tw-order-payment" :data-paid="record.details?.id ? record.details.status === 6 : null">{{ record.details?.id ? (record.details.status === 6 ? '已付款' : '未付款') : '—' }}</span></td>
             <td class="tw-order-created"><time :datetime="record.createdAt">{{ fullTime(record.createdAt) }}</time></td>
             <td class="tw-order-paid">{{ record.details?.id ? (record.details.order_end_time || '—') : '—' }}</td>
-            <td><div class="tw-orders-row-actions"><button :disabled="ordersBusy" @click="refreshOrder(record)">{{ ordersBusy ? '处理中…' : '刷新' }}</button><button @click="openOrder(record)">详情</button><button class="tw-operation-delete" :disabled="ordersBusy" @click="deleteOrder(record)">删除</button></div></td>
+            <td><div class="tw-orders-row-actions"><button class="tw-operation-delete" :disabled="ordersBusy" @click="deleteOrder(record)">删除</button></div></td>
           </tr></tbody>
         </table>
       </div>
@@ -659,7 +660,7 @@ async function deleteTask() {
 .tw-people-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.tw-person{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.tw-person-choice{display:flex;align-items:center;gap:12px;flex:1;min-width:0}.tw-person-details{flex-shrink:0}.tw-person small{overflow-wrap:anywhere}.tw-person{flex-wrap:wrap}.tw-person span{display:flex;flex-direction:column;gap:4px}.tw-person small{color:var(--muted)}
 .tw-order-head-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}.tw-order-head-actions .tw-operation-delete{color:var(--app-error)}
 .tw-orders-page{box-sizing:border-box;display:flex;flex-direction:column;height:100dvh;min-width:0;min-height:0;overflow:hidden;padding:26px 22px 18px}.tw-orders-page> :not(.tw-orders-table-wrap){flex-shrink:0}.tw-orders-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.tw-orders-heading p{margin-top:4px;font-size:12px}.tw-orders-heading .tw-operation-delete,.tw-orders-row-actions .tw-operation-delete{color:var(--app-error)}
-.tw-orders-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.tw-orders-search{display:flex;align-items:center;gap:8px;min-width:280px;color:var(--muted);font-size:12px}.tw-orders-search input{box-sizing:border-box;width:min(300px,45vw);padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font:inherit}.tw-orders-search button{padding:5px 8px;font-size:12px}.tw-orders-count,.tw-orders-footer{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.tw-orders-table-wrap{box-sizing:border-box;flex:1;min-height:0;width:100%;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel)}.tw-orders-table{width:100%;min-width:1280px;table-layout:fixed;border-collapse:collapse;font-size:12px}.tw-orders-table th,.tw-orders-table td{box-sizing:border-box;padding:2px 4px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle;overflow-wrap:anywhere}.tw-orders-table th{position:sticky;top:0;z-index:1;background:var(--soft);color:var(--muted);font-weight:550;white-space:nowrap}.tw-orders-table tbody tr:last-child td{border-bottom:0}.tw-orders-table tbody tr:hover{background:var(--soft)}.tw-orders-table tbody tr.tw-order-notified{background:color-mix(in srgb,var(--app-success) 14%,var(--panel))}.tw-orders-table tbody tr.tw-order-notified:hover{background:color-mix(in srgb,var(--app-success) 21%,var(--panel))}.tw-orders-table th:nth-child(1){width:15%}.tw-orders-table th:nth-child(2){width:15%}.tw-orders-table th:nth-child(3){width:12%}.tw-orders-table th:nth-child(4){width:10%}.tw-orders-table th:nth-child(5){width:10%}.tw-orders-table th:nth-child(6){width:12%}.tw-orders-table th:nth-child(7){width:12%}.tw-orders-table th:nth-child(8){width:14%}.tw-orders-table td:first-child{font-variant-numeric:tabular-nums}.tw-orders-table td:first-child small{display:block;margin-top:2px;color:var(--muted);font-size:10px}.tw-order-copy-notice{flex-shrink:0;margin:-4px 0 8px;padding:6px 9px;border-radius:5px;background:var(--soft);color:var(--app-success);font-size:12px}.tw-order-viewers{display:flex;align-items:center;flex-wrap:wrap;gap:3px 6px}.tw button.tw-order-viewer-name{min-width:0;padding:0;border:0;background:transparent;color:var(--active);font-size:12px;text-align:left;overflow-wrap:anywhere}.tw button.tw-order-viewer-name:hover{background:transparent;text-decoration:underline}.tw button.tw-order-notice{display:inline-grid;place-items:center;width:22px;height:22px;min-width:22px;padding:3px;border:0;background:transparent;color:var(--muted)}.tw button.tw-order-notice:hover{background:var(--soft);color:var(--active)}.tw-order-notice svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}.tw button.tw-order-id{display:block;padding:0;border:0;background:transparent;color:var(--active);font-weight:600;font-variant-numeric:tabular-nums}.tw button.tw-order-id:hover{background:transparent;text-decoration:underline}.tw-order-payment{white-space:nowrap;color:var(--muted)}.tw-order-payment[data-paid=true]{color:var(--app-success);font-weight:600}.tw-orders-row-actions{display:flex;align-items:center;flex-wrap:nowrap;gap:4px;white-space:nowrap}.tw-orders-row-actions button{padding:4px 6px;font-size:11px;white-space:nowrap}.tw-orders-footer{padding:10px 2px}.tw-orders-page .tw-empty{margin-top:14px;padding:42px 16px}.tw-orders-page .tw-empty p{margin:8px 0 14px}
+.tw-orders-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.tw-orders-search{display:flex;align-items:center;gap:8px;min-width:280px;color:var(--muted);font-size:12px}.tw-orders-search input{box-sizing:border-box;width:min(300px,45vw);padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font:inherit}.tw-orders-search button{padding:5px 8px;font-size:12px}.tw-orders-count,.tw-orders-footer{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.tw-orders-table-wrap{box-sizing:border-box;flex:1;min-height:0;width:100%;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel)}.tw-orders-table{width:100%;min-width:1280px;table-layout:fixed;border-collapse:collapse;font-size:12px}.tw-orders-table th,.tw-orders-table td{box-sizing:border-box;padding:2px 4px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle;overflow-wrap:anywhere}.tw-orders-table th{position:sticky;top:0;z-index:1;background:var(--soft);color:var(--muted);font-weight:550;white-space:nowrap}.tw-orders-table tbody tr:last-child td{border-bottom:0}.tw-orders-table tbody tr:hover{background:var(--soft)}.tw-orders-table tbody tr.tw-order-notified{background:color-mix(in srgb,var(--app-success) 14%,var(--panel))}.tw-orders-table tbody tr.tw-order-notified:hover{background:color-mix(in srgb,var(--app-success) 21%,var(--panel))}.tw-orders-table th:nth-child(1){width:12%}.tw-orders-table th:nth-child(2){width:12%}.tw-orders-table th:nth-child(3){width:8%}.tw-orders-table th:nth-child(4){width:18%}.tw-orders-table th:nth-child(5){width:10%}.tw-orders-table th:nth-child(6){width:12%}.tw-orders-table th:nth-child(7){width:12%}.tw-orders-table th:nth-child(8){width:16%}.tw-orders-table td:first-child{font-variant-numeric:tabular-nums}.tw-orders-table td:first-child small{display:block;margin-top:2px;color:var(--muted);font-size:10px}.tw-order-notified-toggle{display:flex;align-items:center;gap:4px;margin:0!important;color:var(--muted);font-size:11px;cursor:pointer;white-space:nowrap}.tw .tw-order-notified-toggle input[type=checkbox]{width:12px;height:12px}.tw-order-notification-actions{display:flex;align-items:center;gap:6px;flex-wrap:nowrap}.tw-order-task-info{font-variant-numeric:tabular-nums;font-size:10px}.tw-order-task-info>div,.tw-order-task-info>small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tw-order-task-info>small{margin-top:2px;font-size:10px;color:var(--muted)}.tw button.tw-order-id{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tw button.tw-order-id.tw-order-detail-error{color:var(--app-warning)}.tw button.tw-order-viewer-name{min-width:0;padding:0;border:0;background:transparent;color:var(--active);font-size:12px;text-align:left;overflow-wrap:anywhere}.tw button.tw-order-viewer-name:hover{background:transparent;text-decoration:underline}.tw button.tw-order-notice{display:inline-grid;place-items:center;width:22px;height:22px;min-width:22px;padding:3px;border:0;background:transparent;color:var(--muted)}.tw button.tw-order-notice:hover{background:var(--soft);color:var(--active)}.tw-order-notice svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}.tw button.tw-order-id{display:block;padding:0;border:0;background:transparent;color:var(--active);font-weight:600;font-variant-numeric:tabular-nums}.tw button.tw-order-id:hover{background:transparent;text-decoration:underline}.tw-order-ticket-price{white-space:nowrap;font-variant-numeric:tabular-nums}.tw-order-payment{white-space:nowrap;color:var(--muted)}.tw-order-payment[data-paid=true]{color:var(--app-success);font-weight:600}.tw-orders-row-actions{display:flex;align-items:center;flex-wrap:nowrap;gap:4px;white-space:nowrap}.tw-orders-row-actions button{padding:4px 6px;font-size:11px;white-space:nowrap}.tw-orders-footer{padding:10px 2px}.tw-orders-page .tw-empty{margin-top:14px;padding:42px 16px}.tw-orders-page .tw-empty p{margin:8px 0 14px}
 .tw-order-created,.tw-order-paid{font-variant-numeric:tabular-nums;white-space:nowrap}
 .tw-orders-table td:first-child small.tw-order-error{color:var(--app-warning)}
 .tw-order-simulated{color:var(--app-warning)!important;font-weight:600}
