@@ -384,6 +384,9 @@ func (s *Service) saveCreatedOrderLocked(id int64, r *inventoryRun, p inventory.
 		} else {
 			copy := *record
 			s.inventory.orders[key] = &copy
+			if s.alarm != nil && s.session != nil && s.state.LoggedIn && s.inventory.runs[id] == r && s.businessRuns[id] == r.business {
+				s.alarm.Trigger(key, record.Simulated)
+			}
 			delete(s.inventory.pending, id)
 			delete(s.inventory.manual, id)
 		}

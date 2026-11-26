@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import InventoryPanel from './InventoryPanel.vue'
 import TaskToast from './TaskToast.vue'
+import OrderAlarm from './OrderAlarm.vue'
 import IPPoolPanel from './IPPoolPanel.vue'
 import type { InventoryView, OrderDisplay } from './bridge'
 import ScanAuthorization from './ScanAuthorization.vue'
@@ -439,7 +440,9 @@ async function deleteTask() {
 <template>
   <main class="tw" aria-label="任务工作台">
     <Teleport to="body">
-      <div v-show="props.page === 'tasks'" class="task-toast-stack" role="region" aria-label="任务通知">
+      <div class="task-toast-stack" role="region" aria-label="客户端通知">
+      <OrderAlarm />
+      <div v-show="props.page === 'tasks'" style="display:contents">
         <TaskToast v-if="!retryingRead" :message="readError" warning>
           <template #actions><button type="button" class="tw-toast-retry" @click="retryRead">重试读取</button></template>
         </TaskToast>
@@ -457,7 +460,8 @@ async function deleteTask() {
           </div>
         </TaskToast>
       </div>
-      <div v-if="props.page === 'orders'" class="task-toast-stack" role="region" aria-label="订单通知"><TaskToast :key="orderCopyRevision" :message="orderCopyNotice" :warning="orderCopyWarning" /></div>
+      <div v-if="props.page === 'orders'" style="display:contents"><TaskToast :key="orderCopyRevision" :message="orderCopyNotice" :warning="orderCopyWarning" /></div>
+      </div>
     </Teleport>
     <Teleport defer to="#client-sidebar-protocol">
       <section class="tw-service sidebar-service" aria-label="协议服务">

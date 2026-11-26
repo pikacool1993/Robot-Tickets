@@ -17,6 +17,7 @@ import (
 	"robot/apps/local-agent/internal/agent"
 	"robot/apps/local-agent/internal/inventory"
 	"robot/apps/local-agent/internal/netdebug"
+	"robot/apps/local-agent/internal/orderalarm"
 	"robot/apps/local-agent/internal/protocols"
 	"robot/apps/local-agent/internal/store"
 	"robot/apps/local-agent/internal/tasks"
@@ -159,6 +160,7 @@ func main() {
 		fatal("客户端初始化失败")
 	}
 	defer service.Close()
+	service.SetAlarmPlayer(orderalarm.NewNativePlayer(orderAlertAudio))
 	service.SetDebugMode(os.Getenv("ROBOT_DEBUG") == "1")
 	if err := service.EnableProtocols(); err != nil {
 		fatal("协议服务配置无法读取，请检查本地数据")

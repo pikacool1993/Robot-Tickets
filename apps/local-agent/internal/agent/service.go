@@ -14,6 +14,7 @@ import (
 	"robot/apps/local-agent/internal/cloud"
 	"robot/apps/local-agent/internal/feishunotify"
 	"robot/apps/local-agent/internal/ippool"
+	"robot/apps/local-agent/internal/orderalarm"
 	"robot/apps/local-agent/internal/store"
 	"robot/apps/local-agent/internal/tasks"
 	"robot/apps/local-agent/internal/userkey"
@@ -45,6 +46,7 @@ type State struct {
 	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
+	alarm             *orderalarm.Manager
 	feishu            *feishunotify.Manager
 	authNotice        map[int64]authNoticeState
 	ipPool            *ippool.Manager
@@ -147,6 +149,7 @@ func New(root string, db *store.Store, enc map[string][]byte, sign map[string]ed
 		}
 	}
 	s.inventory.wg.Add(1)
+	s.alarm = orderalarm.New(db)
 	go s.inventoryClockLoop()
 	go s.monitor()
 	go s.businessLoop()
@@ -292,6 +295,9 @@ func (s *Service) Login(f Form) error {
 	return nil
 }
 func (s *Service) clearSession(notice string) {
+	if s.alarm != nil {
+		s.alarm.Stop()
+	}
 	if s.feishu != nil {
 		s.feishu.Cancel()
 		go s.feishu.Close()
@@ -384,6 +390,9 @@ func (s *Service) monitor() {
 	}
 }
 func (s *Service) Close() {
+	if s.alarm != nil {
+		s.alarm.Close()
+	}
 	s.cancel()
 	<-s.done
 	if s.businessDone != nil {
