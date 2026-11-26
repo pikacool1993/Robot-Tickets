@@ -31,7 +31,7 @@ func TestCompleteCrossRegionOrderEncryptionAndLegacyExpireTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Regions) != 2 || len(body.Users) != 2 || body.Users[0].ID != "12" || body.Users[0].UID != "99" {
+	if len(body.Regions) != 2 || len(body.Users) != 2 || body.Users[0].ID != "11" || body.Users[1].ID != "12" || body.Users[0].UID != "99" {
 		t.Fatal("lost cross-region allocation or viewer identity")
 	}
 	now := time.Now()

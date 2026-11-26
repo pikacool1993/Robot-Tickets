@@ -49,6 +49,27 @@ func TestPreparedPeopleIsolationAndValidation(t *testing.T) {
 	}
 }
 
+func TestUsersFollowAPIOrderForSelectedSubset(t *testing.T) {
+	_, people, _ := orderFixture()
+	people = append(people, business.Person{ID: "13", UID: "99", Name: "测试丙", Timestamp: 102, Signature: "test-c"})
+	prepared, err := PreparePeople(people, []string{"13", "11"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := prepared.People()
+	if len(users) != 2 || users[0].ID != "11" || users[1].ID != "13" {
+		t.Fatalf("users did not retain API order: %+v", users)
+	}
+	people[0], people[2] = people[2], people[0]
+	refreshed, err := PreparePeople(people, []string{"11", "13"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.People()[0].ID != "13" {
+		t.Fatal("refreshed API order not applied")
+	}
+}
+
 func BenchmarkPreparedPeople(b *testing.B) {
 	plan, _, _ := orderFixture()
 	var people []business.Person

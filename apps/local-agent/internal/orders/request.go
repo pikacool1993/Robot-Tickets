@@ -92,18 +92,27 @@ func PreparePeople(people []business.Person, selected []string) (*PreparedPeople
 		return nil, errors.New("订单观演人不能为空")
 	}
 	prepared := &PreparedPeople{users: make([]Person, 0, len(selected))}
-	byID := map[string]business.Person{}
-	for _, p := range people {
-		byID[p.ID] = p
+	wanted := map[string]bool{}
+	for _, id := range selected {
+		if wanted[id] {
+			return nil, errors.New("观演人选择重复，请重新选择")
+		}
+		wanted[id] = true
 	}
 	seen := map[string]bool{}
-	for _, id := range selected {
-		p, ok := byID[id]
-		if !ok || !p.Available() || seen[id] || !positiveID(p.ID) || !positiveID(p.UID) || p.Timestamp <= 0 || p.Signature == "" {
+	// Preserve the API response order, independently of checkbox click order.
+	for _, p := range people {
+		if !wanted[p.ID] {
+			continue
+		}
+		if !p.Available() || seen[p.ID] || !positiveID(p.ID) || !positiveID(p.UID) || p.Timestamp <= 0 || p.Signature == "" {
 			return nil, errors.New("观演人资料不完整，请停止后刷新观演人")
 		}
-		seen[id] = true
+		seen[p.ID] = true
 		prepared.users = append(prepared.users, Person{ID: json.Number(p.ID), UID: json.Number(p.UID), Name: p.Name, Card: p.Card, Phone: p.Phone, Self: p.Self, FullCard: p.FullCard, FullPhone: p.FullPhone, Timestamp: p.Timestamp, Signature: p.Signature, ShowText: p.Name + " " + p.Card})
+	}
+	if len(prepared.users) != len(selected) {
+		return nil, errors.New("观演人资料不完整，请停止后刷新观演人")
 	}
 	return prepared, nil
 }
