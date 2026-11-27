@@ -195,6 +195,10 @@ func (s *Service) reconcileBusinessLocked() {
 		changed := data.Account != account
 		if changed {
 			data.Account = account
+			if t.ImportCount > 0 {
+				data.Selected = nil
+				data.ImportConfirmed = false
+			}
 			data.People = nil
 			data.Usable = false
 			data.Status = "waiting"

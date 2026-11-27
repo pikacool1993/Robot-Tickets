@@ -53,6 +53,9 @@ type ShippingAddress struct {
 	Form AddressForm `json:"form"`
 }
 type Task struct {
+	ImportNames     []string         `json:"importNames,omitempty"`
+	ImportCount     int              `json:"importCount,omitempty"`
+	ImportIssue     string           `json:"importIssue,omitempty"`
 	AllowCross      bool             `json:"allowCross"`
 	RelaxSeats      bool             `json:"relaxSeats,omitempty"`
 	RelaxAfterSec   int64            `json:"relaxAfterSec,omitempty"`
@@ -221,6 +224,7 @@ func (s *Service) clone() document {
 		}
 		next.Tasks[i].Logs = append([]Log{}, next.Tasks[i].Logs...)
 		next.Tasks[i].Selected = append([]string{}, next.Tasks[i].Selected...)
+		next.Tasks[i].ImportNames = append([]string{}, next.Tasks[i].ImportNames...)
 	}
 	return next
 }
@@ -343,6 +347,11 @@ func (s *Service) savePurchaseLocked(id int64, mode string, selected, people []s
 			seen[p] = true
 		}
 		b.Selected = append([]string{}, people...)
+		for _, t := range next.Tasks {
+			if t.ID == id {
+				b.ImportConfirmed = t.ImportCount > 0 && len(people) == t.ImportCount
+			}
+		}
 		next.Business[id] = b
 	}
 	for i := range next.Tasks {

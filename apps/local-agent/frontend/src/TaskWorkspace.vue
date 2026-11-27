@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import InventoryPanel from './InventoryPanel.vue'
 import TaskToast from './TaskToast.vue'
+import TaskCSVImport from './TaskCSVImport.vue'
 import OrderAlarm from './OrderAlarm.vue'
 import IPPoolPanel from './IPPoolPanel.vue'
 import type { InventoryView, OrderDisplay } from './bridge'
@@ -9,6 +10,7 @@ import ScanAuthorization from './ScanAuthorization.vue'
 import { confirmDialog } from './dialogKeyboard'
 import { backend, type State, type Person, type Task, type TaskView, type ProtocolStatus, type AuthAttempt, type AddressForm } from './bridge'
 const inventoryView = ref<InventoryView | null>(null)
+const csvImportDialog = ref<InstanceType<typeof TaskCSVImport>|null>(null)
 const historyOrders = ref<OrderDisplay[]>([])
 const orderSearch = ref('')
 const ordersDialog = ref<HTMLDialogElement | null>(null)
@@ -253,7 +255,13 @@ async function saveDetails(clear = false) {
 }
 const active = computed(() => view.value.tasks.find(t => t.id === activeID.value))
 const areas = computed(() => view.value.catalog.tiers.flatMap(t => t.areas.filter(a => a.isSaleable).map(a => ({ ...a, tier: t.tier, price: t.price }))))
-const groups = computed(() => ['首层', '顶层', 'VIP'].map(name => ({ name, areas: areas.value.filter(a => name === 'VIP' ? a.tier === 'VIP' : a.tier !== 'VIP' && a.level === (name === '首层' ? '首层看台' : '顶层看台')) })))
+const areaNameCollator = new Intl.Collator('zh-CN', { numeric: true })
+const groups = computed(() => ['首层', '顶层', 'VIP'].map(name => ({
+  name,
+  areas: areas.value
+    .filter(a => name === 'VIP' ? a.tier === 'VIP' : a.tier !== 'VIP' && a.level === (name === '首层' ? '首层看台' : '顶层看台'))
+    .sort((a, b) => areaNameCollator.compare(a.code, b.code)),
+})))
 const selectedLabel = (t: Task) => t.selected.join('、') || '未配置'
 function taskStatus(task: Task) {
  const run=inventoryView.value?.runs[task.id]; if(run && run.status!=="stopped") return {label:executionLabels[run.status] || run.status,tone:['paused','order_review','order_cooldown','order_verifying','order_blocked'].includes(run.status)?"warning":run.status==='order_created'?"ready":"pending",detail:run.message + (run.retryAt && !run.retryAt.startsWith("0001-") ? " · 恢复查询 " + new Date(run.retryAt).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false}) : "") + (run.target && !run.target.startsWith("0001-") ? " · 首次提交 " + new Date(run.target).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false}) : "") + (run.plan ? " · " + run.plan.parts.map(p=>`${p.region.name}区 ${p.quantity}张`).join(" + ") : "")}
@@ -265,14 +273,14 @@ function taskStatus(task: Task) {
  if (task.businessStatus === 'failed' || task.businessStatus === 'config_error' || task.businessStatus === 'blocked') return { label: '需处理', tone: 'warning', detail: task.businessMessage || '业务暂不可用，请刷新重试' }
  if (!task.seatValid || !task.selected.length) return { label: '待配置', tone: 'warning', detail: '请选择座位要求' }
  if (!task.peopleUsable) return { label: '待就绪', tone: 'pending', detail: task.businessMessage || '等待业务登录' }
- if (task.peopleComplete === false) return { label: '待配置', tone: 'warning', detail: '已选观演人已不存在或不可用，请重新选择' }
+ if (task.peopleComplete === false) return { label: '待配置', tone: 'warning', detail: task.importIssue || '已选观演人已不存在或不可用，请重新选择' }
  if (!task.peopleSelected?.length) return { label: '待配置', tone: 'warning', detail: '请选择观演人' }
  return { label: '已就绪', tone: 'ready', detail: '账号与配置已就绪' }
 }
 const search = ref('')
 const searchTerms = computed(() => search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean))
 const filteredTasks = computed(() => view.value.tasks.filter(task => {
-  const text = [String(task.id), task.wechatNickname || '', task.note || '', ...(task.spectatorNames || [])].join(' ').toLocaleLowerCase()
+  const text = [String(task.id), task.wechatNickname || '', task.note || '', ...(task.spectatorNames || []), ...(task.importNames || [])].join(' ').toLocaleLowerCase()
   return searchTerms.value.every(term => text.includes(term))
 }))
 const logLabels: Record<string, string> = {debug: '调试', info: '普通', success: '成功', warning: '提醒', error: '失败' }
@@ -439,6 +447,7 @@ async function deleteTask() {
 
 <template>
   <main class="tw" aria-label="任务工作台">
+    <TaskCSVImport ref="csvImportDialog" @imported="load" />
     <Teleport to="body">
       <div class="task-toast-stack" role="region" aria-label="客户端通知">
       <OrderAlarm />
@@ -483,6 +492,7 @@ async function deleteTask() {
           <div class="tw-toolbar" role="search" aria-label="任务搜索">
             <div class="tw-task-search-actions">
               <button class="tw-primary" :disabled="creating || loading || !!bulkAction" @click="createTask">{{ creating ? '创建中' : '新建任务' }}</button>
+              <button :disabled="creating || loading || !!bulkAction" @click="csvImportDialog?.open()">导入任务</button>
             <div class="tw-search"><input v-model="search" type="search" aria-label="搜索任务" placeholder="搜索任务" title="支持搜索任务编号、微信昵称、备注或观演人" autocomplete="off" :disabled="loading" @input="tip = null"/><button v-if="search" class="tw-search-clear" type="button" aria-label="清空搜索" @click="search = ''; tip = null">清空</button></div>
             </div>
             <div class="tw-task-actions" role="group" aria-label="任务批量操作" title="批量操作作用于当前客户端的全部任务，不受搜索过滤影响">
@@ -514,7 +524,7 @@ async function deleteTask() {
             </div>
           </div>
           <button :disabled="!!bulkAction || running(task.id)" class="tw-summary tw-seats" aria-haspopup="dialog" @mouseenter="tooltip($event, `${task.mode === 'tier' ? '指定票类' : '固定区域'}：${selectedLabel(task)}`)" @mouseleave="tip = null" @focus="tooltip($event, selectedLabel(task))" @blur="tip = null" @click="open(task, 'seat')"><span class="tw-field">{{ task.mode === 'tier' ? '指定票类' : '固定区域' }} ↗</span><span class="tw-value">{{ selectedLabel(task) }}</span></button>
-          <button :disabled="!!bulkAction || running(task.id)" class="tw-summary tw-people" aria-haspopup="dialog" @click="open(task, 'people')"><span class="tw-field">已选观演人 {{ task.peopleSelected?.length || 0 }}人 ↗</span><span v-if="!task.spectatorNames?.length && task.businessStatus === 'ready' && task.peopleUsable" class="tw-value tw-people-ready" :title="`业务已登录，已获取${task.people?.length || 0}位观演人`"><svg class="tw-business-ready-icon" viewBox="0 0 16 16" fill="none" role="img" aria-label="业务已登录"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/><path d="m5 8 2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>已获取{{ task.people?.length || 0 }}位观演人</span></span><span v-else class="tw-value" :title="task.spectatorNames?.join('、') || task.businessMessage">{{ task.spectatorNames?.join('、') || task.businessMessage || '选择观演人' }}</span></button>
+          <button :disabled="!!bulkAction || running(task.id)" class="tw-summary tw-people" aria-haspopup="dialog" @click="open(task, 'people')"><span class="tw-field">已选观演人 {{ task.peopleSelected?.length || 0 }}人 ↗</span><span v-if="!task.spectatorNames?.length && !task.importNames?.length && task.businessStatus === 'ready' && task.peopleUsable" class="tw-value tw-people-ready" :title="`业务已登录，已获取${task.people?.length || 0}位观演人`"><svg class="tw-business-ready-icon" viewBox="0 0 16 16" fill="none" role="img" aria-label="业务已登录"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/><path d="m5 8 2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>已获取{{ task.people?.length || 0 }}位观演人</span></span><span v-else class="tw-value" :title="task.spectatorNames?.join('、') || task.importNames?.join(' ') || task.businessMessage">{{ task.spectatorNames?.join('、') || task.importNames?.join(' ') || task.businessMessage || '选择观演人' }}</span></button>
           <button class="tw-summary tw-note-summary" aria-haspopup="dialog" :title="task.note || '添加备注或特殊说明'" @click="open(task, 'note')"><span class="tw-field">备注</span><span class="tw-value">{{ task.note || '添加备注或特殊说明' }}</span></button>
           <button class="tw-log" :class="{ 'tw-log-error': task.latest?.level === 'error' || task.latest?.level === 'warning' }" type="button" aria-haspopup="dialog" :aria-label="`查看任务 ${task.id} 的操作日志`" :title="task.latest?.text || '查看操作日志'" @click="open(task, 'logs')"><template v-if="task.latest"><time :datetime="task.latest.at">{{ clock(task.latest.at) }}</time><span>{{ task.latest.text }}</span></template><span v-else>暂无操作日志</span></button>
           <div class="tw-task-operations" role="group" :aria-label="`任务 ${task.id} 操作`">
@@ -625,7 +635,8 @@ async function deleteTask() {
           </template>
           <template v-else-if="modal === 'people'">
  <p role="status">{{ active.businessMessage || '授权账号后自动获取观演人' }}</p>
- <p v-if="active.peopleComplete === false" class="tw-note">已选观演人中有人已不存在或不可用，请重新选择完整购票人员。</p>
+ <p v-if="active.importNames?.length" class="tw-note">预定观演人：{{ active.importNames.join(' ') }} · {{ active.importCount }} 张</p>
+ <p v-if="active.peopleComplete === false" class="tw-note">{{ active.importIssue || '已选观演人中有人已不存在或不可用，请重新选择完整购票人员。' }}</p>
  <p v-if="!active.peopleUsable" class="tw-note">{{ active.paused && active.protocolStatus === 'alive' ? '账号已在线，点击任务卡片操作区的“刷新”可恢复任务并获取观演人。' : '当前观演人暂不可选，原列表及勾选保留，业务登录和刷新成功后恢复。' }}</p>
  <div class="tw-people-actions"><button :disabled="saving || active.businessStatus === 'loading' || active.protocolStatus !== 'alive' || active.paused" @click="refreshPeople(false)">刷新观演人</button><button v-if="active.protocolStatus !== 'alive'" @click="open(active, 'auth')">前往授权</button></div>
  <p v-if="active.peopleUsable && !active.people?.length">此账号暂无观演人。</p>
@@ -783,7 +794,7 @@ async function deleteTask() {
 </style>
 
 <style scoped>
-.tw-task-controls .tw-toolbar{display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);align-items:center;gap:12px}
+.tw-task-controls .tw-toolbar{display:grid;grid-template-columns:minmax(340px,400px) minmax(0,1fr);align-items:center;gap:12px}
 .tw-task-search-actions{display:flex;align-items:center;gap:8px;min-width:0}
 .tw-task-search-actions>button{flex-shrink:0;min-height:36px;padding:7px 10px;font-size:12px;white-space:nowrap}
 .tw-task-controls .tw-search{max-width:220px;width:100%}

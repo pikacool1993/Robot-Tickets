@@ -8,14 +8,15 @@ import (
 )
 
 type BusinessData struct {
-	DeviceID   string            `json:"deviceId"`
-	DeviceType string            `json:"deviceType"`
-	Account    string            `json:"account"`
-	People     []business.Person `json:"people"`
-	Selected   []string          `json:"selected"`
-	Status     string            `json:"status"`
-	Message    string            `json:"message"`
-	Usable     bool              `json:"usable"`
+	ImportConfirmed bool              `json:"importConfirmed,omitempty"`
+	DeviceID        string            `json:"deviceId"`
+	DeviceType      string            `json:"deviceType"`
+	Account         string            `json:"account"`
+	People          []business.Person `json:"people"`
+	Selected        []string          `json:"selected"`
+	Status          string            `json:"status"`
+	Message         string            `json:"message"`
+	Usable          bool              `json:"usable"`
 }
 type PersonView struct {
 	ID    string `json:"id"`
@@ -40,6 +41,10 @@ func fillBusinessView(t *Task, b BusinessData) {
 	t.PeopleUsable = b.Usable
 	t.PeopleSelected = append([]string{}, b.Selected...)
 	t.PeopleComplete = true
+	t.ImportIssue = importedIssue(*t, b)
+	if t.ImportIssue != "" {
+		t.PeopleComplete = false
+	}
 	available := map[string]bool{}
 	for _, p := range b.People {
 		available[p.ID] = p.Available()
@@ -79,6 +84,7 @@ func (s *Service) SaveBusiness(id int64, b BusinessData) error {
 	next := s.clone()
 	for _, t := range next.Tasks {
 		if t.ID == id {
+			matchImportedPeople(t, &b)
 			next.Business[id] = b
 			return s.commit(next)
 		}
@@ -108,6 +114,8 @@ func (s *Service) SavePeopleSelection(id int64, ids []string) error {
 	next.Business[id] = b
 	for i := range next.Tasks {
 		if next.Tasks[i].ID == id {
+			b.ImportConfirmed = len(ids) == next.Tasks[i].ImportCount && next.Tasks[i].ImportCount > 0
+			next.Business[id] = b
 			addLog(&next.Tasks[i], "success", "观演人选择已保存")
 		}
 	}

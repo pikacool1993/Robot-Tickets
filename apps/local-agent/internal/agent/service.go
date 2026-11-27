@@ -46,6 +46,7 @@ type State struct {
 	AuthProtocol string    `json:"authProtocol"`
 }
 type Service struct {
+	csvImport         *csvImportState
 	alarm             *orderalarm.Manager
 	feishu            *feishunotify.Manager
 	authNotice        map[int64]authNoticeState
@@ -295,6 +296,7 @@ func (s *Service) Login(f Form) error {
 	return nil
 }
 func (s *Service) clearSession(notice string) {
+	s.csvImport = nil
 	if s.alarm != nil {
 		s.alarm.Stop()
 	}

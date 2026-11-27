@@ -17,6 +17,9 @@ type orderPeopleSnapshot struct {
 }
 
 func (r *inventoryRun) prepareOrderPeople() error {
+	if r.task.ImportCount > 0 && (len(r.task.PeopleSelected) != r.task.ImportCount || !r.task.PeopleComplete) {
+		return errors.New("请先确认全部预定观演人")
+	}
 	people, err := orders.PreparePeople(r.people, r.task.PeopleSelected)
 	if err != nil {
 		return err

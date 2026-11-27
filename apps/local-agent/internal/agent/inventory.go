@@ -368,6 +368,9 @@ func (s *Service) startInventoryModeLocked(id int64, realtime, maintenance bool)
 	if !task.PeopleUsable || len(task.PeopleSelected) == 0 {
 		return errors.New("请先选择可用观演人")
 	}
+	if !task.PeopleComplete {
+		return errors.New("观演人待确认，请确认全部预定观演人后启动")
+	}
 	peopleData, err := s.tasks.Business(id)
 	if err != nil {
 		return err
